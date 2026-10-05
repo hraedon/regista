@@ -223,25 +223,28 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,vendor-check,sidecar,ed25519,encryption,vault]"
+          pip install -e ".[dev]"
       - name: Tag matches package version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(python -c 'import importlib.metadata as m; print(m.version("regista-hraedon"))')"
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg"
-      # GitHub issue #65: the ledger must equal what PyPI serves, and the
-      # tagged tree must hold exactly the ledger's migrations. check-dist in the
-      # build job then judges the exact bytes that are uploaded.
-      - name: Published migrations are immutable
+      # GitHub #65: Plan 032 F1/D1 replace the old chain with the pinned fresh
+      # baseline. check-release also refuses any pre-0.8 publication version.
+      # check-dist judges the exact reviewed artifact bytes to be uploaded.
+      - name: Fresh schema baseline is immutable
         run: |
-          python3 scripts/check_published_migrations.py verify-ledger
+          python3 scripts/check_published_migrations.py verify-baseline
           python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
       - name: Lint
-        run: ruff check src/ tests/ tools/
+        run: ruff check src/ tests/ examples/ scripts/
       - name: Type-check
         run: mypy
       - name: Test
+        env:
+          REGISTA_TEST_DSN: postgresql://regista_test:regista_test@localhost:5432/regista_test
+          REGISTA_REQUIRE_DB: "1"
         run: pytest tests/ -q
 
   build:
@@ -261,7 +264,7 @@ jobs:
       # #65: judge the exact bytes about to be uploaded against the allowlist,
       # including wheels pip and uv build from the sdist (see the guard's
       # docstring for the build contract that half of the claim rests on).
-      - name: Built artifacts honour the published-migration ledger
+      - name: Built artifacts honour the baseline pin and reviewed tree
         run: |
           home="$(mktemp -d)"
           env -i PATH="$PATH" HOME="$home" \

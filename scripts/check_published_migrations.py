@@ -1,142 +1,19 @@
-"""Published-migration immutability guard (GitHub issue #65): an allowlist.
+"""Schema-baseline immutability and reviewed-artifact guard (GitHub #65).
 
-**The rule.** Once a release containing a migration is published, that
-migration's path and bytes are immutable. Every later schema change ships as a
-new, appended migration. A store migrated by an old release records each
-migration's checksum, so rewriting a published file makes those stores report
-``MIGRATION_DRIFT``.
+Plan 032 F1 and D1 explicitly retire the pre-0.8 migration chain: extraction
+establishes a fresh baseline, with no migration through trust-system schemas.
+The old ledger is preserved under plans/032-f0-inventory/ as historical evidence.
+It is not an allowlist for the new distribution. scripts/schema-baseline.json
+pins the new schema and workflow resources, starting with baseline version 1.
+Changing their bytes requires a deliberate, reviewed baseline/version decision.
+verify-baseline validates this local pin; it makes no claim of publication on
+PyPI (F4/F5 still own release version and publication).
 
-**Where the verdict is proven.** Only ``check-dist --authoritative`` gives the
-binding verdict, and it runs only in CI: the PR workflow's
-``published-migrations`` job and the publish workflow's build job, each in a
-fresh full-depth clone, under ``env -i`` with exactly
-``GIT_NO_REPLACE_OBJECTS=1``, ``GIT_CONFIG_NOSYSTEM=1``,
-``GIT_CONFIG_GLOBAL=/dev/null`` and an empty ``HOME``. The guard itself
-refuses ``--authoritative`` unless that environment holds: those values, no
-other inherited ``GIT_*`` variable, an empty HOME, and a non-shallow clone. The
-authoritative run then runs ``git fsck --strict`` over everything reachable
-from HEAD, so the commit, every tree and every blob hash to their IDs. In every
-mode the guard refuses ``refs/replace/*``, grafts, alternate object stores
-(``objects/info/alternates`` and ``http-alternates``, plus
-``GIT_ALTERNATE_OBJECT_DIRECTORIES`` and ``GIT_OBJECT_DIRECTORY``), and it
-re-hashes every blob it reads as ``blob <len>\\0<data>`` (sha1 or sha256, per
-the repository's object format) against the ID HEAD's tree names. A loose
-object stored under an ID it does not hash to is refused. It runs its own git
-calls with ``--no-replace-objects`` under an allowlisted environment. A local
-run without ``--authoritative`` still executes every check, but every line it
-prints is labelled ADVISORY: it shows what CI would likely say, and proves
-nothing about a checkout whose git configuration it does not control.
-
-**What this guard proves, and nothing more.**
-
-1. ``release/published-migrations.json`` ("the ledger") records, for each
-   release, exactly what PyPI serves for ``regista-hraedon`` *now*: per release,
-   the sha256 of every file and of every migration it ships (``verify-ledger``;
-   network).
-2. The artifacts about to be published (``check-dist``) contain ONLY REVIEWED
-   BYTES, meaning the blobs of the COMMITTED tree at HEAD (a checkout with
-   uncommitted changes to tracked files is refused). Generated package
-   metadata (METADATA including Requires-Dist, entry_points.txt, WHEEL, RECORD)
-   must be byte-identical to what pip and uv each build from the accepted sdist,
-   so it is bound to reviewed input too. Their migration subset equals the ledger.
-   Package code may do anything its reviewed source says when it is run; that is
-   the code-review boundary and is deliberately outside this artifact guard.
-
-It deliberately makes **no claim about git history**, and none about releases
-that have been deleted from PyPI. ``verify-ledger`` fails loudly if a recorded
-release is no longer on PyPI, and a human decides what to do. Earlier versions
-judged ledger history (withdrawals, merge parents, renames). Six review rounds
-found a new gap in that judgement every time, so it was dropped rather than
-patched further.
-
-**Scope of the sdist half.** A PEP 517 build executes the reviewed project code
-and backend code. That execution is not claimed to be inert. The artifact claim
-covers ISOLATED builds by pip and uv, the two frontends actually run here, and
-rests on a build contract:
-
-* ``build-system.requires`` equals the named, exact
-  ``TRUSTED_BUILD_REQUIREMENTS`` closure, and the backend is
-  ``hatchling.build`` with no ``backend-path``. Build requirements execute code:
-  this frozen closure is TRUSTED, not inert.
-* ``[tool.hatch]`` equals the single reviewed wheel-package/force-include table;
-  no version source, metadata hook, build hook, environment, or other extension
-  point is accepted. There is no ``hatch.toml`` or ``hatch_build.py``.
-* ``[project]`` has a literal name and version and no ``dynamic`` key.
-* The sdist's ``pyproject.toml`` is byte-identical to the reviewed one.
-
-Builds with ``--no-build-isolation``, other frontends, and other backends are
-outside the claim.
-
-**The allowlist (``check-dist``)**, applied to every member of every wheel and
-sdist in ``DIST_DIR``:
-
-* A member name is ASCII, matches ``SAFE_NAME`` (``[A-Za-z0-9._+-]`` segments
-  joined by ``/``), is NFC, and has no empty, ``.`` or ``..`` segment. So there
-  is no leading ``/``, no backslash, no NUL or control character, and no
-  Unicode.
-* A member is a regular file. Every symlink, hard link, directory entry, device
-  or FIFO is refused.
-* No two members collide after NFKC + casefold, and no name repeats.
-* Every sdist member is byte-identical to the committed HEAD blob at the same
-  relative path, except its single generated ``PKG-INFO``. Every wheel package
-  member is byte-identical to its committed source blob (``src/regista/`` or, for
-  the force-included migration files, ``migrations/``). ``check-dist`` therefore
-  requires ``repo_root`` to be the root of a clean Git checkout. Bytes on disk are
-  never trusted, so an edit hidden from ``git status`` (``assume-unchanged``)
-  cannot pass.
-* Every wheel in ``DIST_DIR`` is member-for-member identical (content sha256
-  AND ZIP external attributes, i.e. file mode) to the wheels pip and uv build
-  from each sdist. This binds the generated metadata.
-* Every wheel member has mode exactly 0644. No executable bit is allowed on
-  migrations or package data, and the ``EXECUTABLE_WHEEL_MEMBERS`` allowlist is
-  empty. Every sdist member's executable bit must equal its committed tree mode
-  (100755 vs 100644), and nothing under ``migrations/`` or ``src/regista/`` may
-  be executable.
-* Encrypted, corrupt or otherwise unreadable members are a one-line error with
-  a non-zero exit, never a traceback. This reviewed-bytes
-  rule is intentionally NOT applied by ``verify-ledger`` to published artifacts
-  that predate the current tree.
-* A wheel contains files only under ``regista/`` and one
-  ``<dist>-<version>.dist-info/`` directory matching its filename. The latter
-  contains only the named metadata files and ``licenses/`` subtree. ``METADATA``,
-  ``WHEEL``, and ``RECORD`` are mandatory; names/versions/tags agree with the
-  filename and literal project metadata; only ``py3-none-any`` is accepted;
-  licenses match tracked root files; and ``RECORD`` authenticates every member.
-  In particular, no ``.data/`` install relocation is allowed.
-* Site-startup executable names (``*.pth``, ``sitecustomize.py`` and
-  ``usercustomize.py``) are refused anywhere in a wheel or sdist.
-* A migration is a member whose parent is EXACTLY the migrations directory
-  (``regista/migrations/`` in a wheel, ``<root>/migrations/`` in an sdist), with
-  a filename matching ``MIGRATION_NAME`` (``^\\d{3}_[a-z0-9_]+\\.sql$``). Any
-  other member whose folded path lies under a folded migrations directory is
-  refused. So is ``src/regista/migrations/``, the runner's preferred copy. In a
-  wheel, so is any folded ``.sql`` anywhere else.
-* The wheel's migrations must equal the expected set exactly, with matching
-  bytes: no extras and no missing files. Each one must be vouched for by the
-  wheel's single ``RECORD`` with the same sha256.
-* A wheel is one canonical ZIP container:
-  - local records start at offset 0 and are contiguous;
-  - each local header agrees with its central-directory entry;
-  - one end-of-central-directory record sits at the very end, with no comment;
-  - there are no data descriptors and no extra fields (so no ZIP64 and no
-    Unicode Path names).
-* An sdist has one top-level directory and no PAX headers.
-* No regular member may sit where a directory must be, for example a file named
-  exactly ``regista/migrations``. No segment may end in ``.``, and none may be a
-  Windows device name.
-* There must be at least one wheel and at least one sdist. Each sdist's
-  migrations must equal the wheel's, and each sdist must honour the build
-  contract above. A wheel built FROM each sdist by uv AND by pip, in isolation,
-  must pass all of the above and carry the same migrations.
-
-**Historical violations.** Two migrations were rewritten in place in 0.6.0
-(``001_initial.sql`` and ``035_event_chain_head_genesis_sentinel.sql``):
-0.5.x ships one set of bytes, 0.6.0-0.7.2 another. Both are pinned by exact
-digest set in ``FROZEN_HISTORICAL_VIOLATIONS``. Any further multiplicity fails.
-
-Subcommands: ``check-dist DIST_DIR`` (authoritative; CI and the publish build
-job), ``check-tree`` (fast early signal over ``migrations/``), ``verify-ledger``
-(network), ``check-release --version X``, ``build`` (network; regenerate).
+check-dist retains the existing reviewed-tree byte binding, ZIP/tar/path/mode
+checks, RECORD verification and exact pip/uv rebuild comparison. Only the
+controlled full-clone CI environment may use --authoritative; ordinary local
+runs are advisory. This guard protects artifacts, not runtime behavior or git
+history. The pinned Hatch backend closure remains trusted executable build code.
 """
 
 from __future__ import annotations
@@ -156,26 +33,22 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 import tomllib
 import unicodedata
-import urllib.request
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-LEDGER_PATH = REPO_ROOT / "release" / "published-migrations.json"
+LEDGER_PATH = REPO_ROOT / "scripts" / "schema-baseline.json"
 PROJECT = "regista-hraedon"
-PYPI_JSON = f"https://pypi.org/pypi/{PROJECT}/json"
-LEDGER_FORMAT = 2
+LEDGER_FORMAT = 3
 
-WHEEL_MIGRATIONS = "regista/migrations/"
-SDIST_MIGRATIONS = "migrations/"
-FORBIDDEN_SOURCE_DIRS = ("src/regista/migrations/",)
+WHEEL_MIGRATIONS = "regista/"
+SDIST_MIGRATIONS = "src/regista/"
+FORBIDDEN_SOURCE_DIRS = ("migrations/", "src/regista/migrations/", "regista/migrations/")
 SAFE_NAME = re.compile(r"[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*")
-MIGRATION_NAME = re.compile(r"\d{3}_[a-z0-9_]+\.sql")
 
 TRUSTED_BUILD_REQUIREMENTS = (
     "hatchling==1.32.4",
@@ -190,28 +63,28 @@ UNIVERSAL_WHEEL_TAG = "py3-none-any"
 REVIEWED_HATCH_CONFIG: Mapping[str, Any] = {
     "build": {
         "targets": {
-            "wheel": {
-                "packages": ["src/regista"],
-                "force-include": {"migrations": "regista/migrations"},
-            }
+            "wheel": {"packages": ["src/regista"]},
+            "sdist": {
+                "include": [
+                    "/src/regista",
+                    "/examples",
+                    "/tests",
+                    "/scripts",
+                    "/githooks",
+                    "/publication.toml",
+                    "/pyproject.toml",
+                    "/README.md",
+                    "/LICENSE",
+                    "/Makefile",
+                    "/docker-compose.test.yml",
+                    "/.github",
+                ]
+            },
         }
     }
 }
 
-FROZEN_HISTORICAL_VIOLATIONS: Mapping[str, frozenset[str]] = {
-    "001_initial.sql": frozenset(
-        {
-            "b8d3fbf2e07382d486b88c06cef493eb0dd474bd597f9ceb5d358f2acce9b49f",
-            "db8e3daeb85c962f4034af65b5bb7fae8929e9d8d6fb8015053b0703091cb373",
-        }
-    ),
-    "035_event_chain_head_genesis_sentinel.sql": frozenset(
-        {
-            "8dd73c22dd46efd797709b61daf811e4f939649e6def3f258bdd05801def2f31",
-            "6dd6ccc9ad9fb07a6196a94b8968588c5b7913f7fc28beb990aa69679a637a0f",
-        }
-    ),
-}
+FROZEN_HISTORICAL_VIOLATIONS: Mapping[str, frozenset[str]] = {}
 
 
 class GuardError(Exception):
@@ -381,18 +254,21 @@ def _project_identity(data: Mapping[str, Any], where: str) -> tuple[str, str]:
     return name, version
 
 
+BASELINE_FILES = frozenset({"schema.sql", "workflow.schema.json"})
+
+
 def _classify(rel: str, migrations_dir: str, where: str, *, sql_elsewhere: bool) -> str | None:
-    """Return the migration filename if ``rel`` is one, None if it is some other
-    allowed file; raise if it is anything else touching the migrations path."""
-    folded = _fold(rel)
-    for forbidden in (migrations_dir, *FORBIDDEN_SOURCE_DIRS):
-        if folded.startswith(_fold(forbidden)):
-            name = rel[len(forbidden) :]
-            if rel.startswith(migrations_dir) and MIGRATION_NAME.fullmatch(name):
-                return name
-            raise GuardError(f"{where}: {rel!r} is not a canonical migration in {migrations_dir}")
-    if not sql_elsewhere and folded.endswith(".sql"):
-        raise GuardError(f"{where}: {rel!r} is a .sql outside {migrations_dir}")
+    for retired in FORBIDDEN_SOURCE_DIRS:
+        if _fold(rel).startswith(_fold(retired)):
+            raise GuardError(f"{where}: retired migration path {rel!r}")
+    for name in BASELINE_FILES:
+        expected = migrations_dir + name
+        if _fold(rel) == _fold(expected):
+            if rel != expected:
+                raise GuardError(f"{where}: noncanonical baseline path {rel!r}")
+            return name
+    if rel.lower().endswith(".sql"):
+        raise GuardError(f"{where}: {rel!r} is SQL outside the baseline")
     return None
 
 
@@ -418,20 +294,26 @@ def _check_zip_container(blob: bytes, infos: list[zipfile.ZipInfo], where: str) 
     expected = 0
     for info in sorted(infos, key=lambda i: i.header_offset):
         if info.header_offset != expected:
-            raise GuardError(f"{where}: {info.orig_filename!r} is not contiguous (preamble, gap "
-                             "or overlap)")
+            raise GuardError(
+                f"{where}: {info.orig_filename!r} is not contiguous (preamble, gap or overlap)"
+            )
         too_big = max(info.file_size, info.compress_size) >= 0xFFFFFFFF
         if info.flag_bits & 0x08 or too_big:
             raise GuardError(f"{where}: {info.orig_filename!r} uses a data descriptor or ZIP64")
-        (sig, _ver, flags, method, _t, _d, crc, csize, usize, name_len,
-         extra_len) = struct.unpack("<4sHHHHHIIIHH", blob[expected : expected + 30])
+        (sig, _ver, flags, method, _t, _d, crc, csize, usize, name_len, extra_len) = struct.unpack(
+            "<4sHHHHHIIIHH", blob[expected : expected + 30]
+        )
         # A streaming unzipper trusts the LOCAL header; it must say exactly what
         # the central directory says.
-        if sig != b"PK\x03\x04" or (flags, method, crc, csize, usize) != (
-            info.flag_bits, info.compress_type, info.CRC, info.compress_size, info.file_size
-        ) or blob[expected + 30 : expected + 30 + name_len] != info.orig_filename.encode():
-            raise GuardError(f"{where}: {info.orig_filename!r} local header disagrees with "
-                             "the central directory")
+        if (
+            sig != b"PK\x03\x04"
+            or (flags, method, crc, csize, usize)
+            != (info.flag_bits, info.compress_type, info.CRC, info.compress_size, info.file_size)
+            or blob[expected + 30 : expected + 30 + name_len] != info.orig_filename.encode()
+        ):
+            raise GuardError(
+                f"{where}: {info.orig_filename!r} local header disagrees with the central directory"
+            )
         # No extra field in either header: none of our wheels carries one, and
         # they are where ZIP64 sizes and alternate (Unicode Path) names live.
         if info.extra or extra_len:
@@ -525,9 +407,20 @@ def _check_object_store_integrity(root: Path) -> None:
     the per-blob re-hash does not."""
     try:
         proc = subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(root), "fsck", "--strict",
-             "--no-dangling", "--no-progress", "HEAD"],
-            capture_output=True, check=False, env=_git_env(),
+            [
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(root),
+                "fsck",
+                "--strict",
+                "--no-dangling",
+                "--no-progress",
+                "HEAD",
+            ],
+            capture_output=True,
+            check=False,
+            env=_git_env(),
         )
     except OSError as exc:
         raise GuardError(f"{root}: cannot run git fsck ({exc.__class__.__name__})") from exc
@@ -616,8 +509,10 @@ def _git_tracked_files(repo_root: Path) -> Tracked:
         # Never trust the store: a loose object can sit under an ID it does not
         # hash to (round-6 review). Recompute the ID from the bytes returned.
         if _object_id(fmt, "blob", data) != sha:
-            raise GuardError(f"{repo_root}: object for {path!r} does not hash to {sha}; "
-                             "the object store is corrupt or forged")
+            raise GuardError(
+                f"{repo_root}: object for {path!r} does not hash to {sha}; "
+                "the object store is corrupt or forged"
+            )
         out[path] = data
         pos = start + int(size) + 1
     return out
@@ -731,11 +626,7 @@ def _read_wheel(
                 out[mig] = _sha(data)
             if repo_root is not None and tracked is not None and name.startswith("regista/"):
                 package_rel = name[len("regista/") :]
-                source_rel = (
-                    f"migrations/{package_rel[len('migrations/') :]}"
-                    if package_rel.startswith("migrations/")
-                    else f"src/regista/{package_rel}"
-                )
+                source_rel = f"src/regista/{package_rel}"
                 if data != _reviewed_bytes(repo_root, tracked, source_rel, where):
                     raise GuardError(f"{where}: {name!r} differs from tracked {source_rel!r}")
             license_prefix = f"{dist_info}/licenses/"
@@ -744,9 +635,7 @@ def _read_wheel(
                 if "/" in license_name or not license_name:
                     raise GuardError(f"{where}: license path {name!r} is not a root filename")
                 if data != _reviewed_bytes(repo_root, tracked, license_name, where):
-                    raise GuardError(
-                        f"{where}: {name!r} differs from tracked {license_name!r}"
-                    )
+                    raise GuardError(f"{where}: {name!r} differs from tracked {license_name!r}")
         record_path = required_metadata["RECORD"]
         listed: dict[str, tuple[str, str]] = {}
         try:
@@ -836,15 +725,17 @@ def _read_sdist(
             data = fh.read()
             executable = bool(m.mode & 0o111)
             if executable and rel.startswith((SDIST_MIGRATIONS, *_SDIST_PACKAGE_DIRS)):
-                raise GuardError(f"{where}: {rel!r} is executable; migrations and package "
-                                 "data may not be")
+                raise GuardError(
+                    f"{where}: {rel!r} is executable; migrations and package data may not be"
+                )
             if repo_root is not None and tracked is not None and rel != "PKG-INFO":
                 if data != _reviewed_bytes(repo_root, tracked, rel, where):
                     raise GuardError(f"{where}: {rel!r} differs from its tracked source")
                 committed_exec = getattr(tracked, "modes", {}).get(rel) == "100755"
                 if executable != committed_exec:
-                    raise GuardError(f"{where}: {rel!r} executable bit differs from the "
-                                     "committed tree mode")
+                    raise GuardError(
+                        f"{where}: {rel!r} executable bit differs from the committed tree mode"
+                    )
             elif rel == "PKG-INFO" and executable:
                 raise GuardError(f"{where}: PKG-INFO is executable")
             mig = _classify(rel, SDIST_MIGRATIONS, where, sql_elsewhere=True)
@@ -857,111 +748,48 @@ def _read_sdist(
 # Ledger
 
 
-def _fetch(url: str, attempts: int = 4) -> bytes:
-    last: Exception | None = None
-    for i in range(attempts):
-        try:
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                body: bytes = resp.read()
-                return body
-        except OSError as exc:
-            last = exc
-            time.sleep(2**i)
-    raise GuardError(f"could not fetch {url} after {attempts} attempts: {last}")
-
-
-def _multiplicity(releases: Mapping[str, Any]) -> dict[str, list[str]]:
-    seen: dict[str, set[str]] = {}
-    for entry in releases.values():
-        for name, digest in entry["migrations"].items():
-            seen.setdefault(name, set()).add(digest)
-    return {n: sorted(d) for n, d in sorted(seen.items()) if len(d) > 1}
-
-
-def build_releases() -> dict[str, Any]:
-    """What PyPI serves now, read through the same allowlist as check-dist."""
-    index = json.loads(_fetch(PYPI_JSON))
-    releases: dict[str, Any] = {}
-    for version in sorted(index["releases"], key=_version_key):
-        files = index["releases"][version]
-        if not files:
-            continue
-        entry: dict[str, Any] = {"files": {}, "migrations": None}
-        for f in sorted(files, key=lambda f: str(f["filename"])):
-            blob = _fetch(f["url"])
-            if _sha(blob) != f["digests"]["sha256"]:
-                raise GuardError(f"{f['filename']}: download does not match PyPI's digest")
-            entry["files"][f["filename"]] = {"sha256": _sha(blob), "packagetype": f["packagetype"]}
-            reader = {"bdist_wheel": read_wheel, "sdist": read_sdist}.get(f["packagetype"])
-            if reader is None:
-                raise GuardError(f"{f['filename']}: unexpected package type {f['packagetype']}")
-            mig = reader(blob, f["filename"])
-            if entry["migrations"] is not None and mig != entry["migrations"]:
-                raise GuardError(f"{version}: its files ship different migrations")
-            entry["migrations"] = mig
-        entry["migrations"] = dict(sorted(entry["migrations"].items()))
-        releases[version] = entry
-    return releases
-
-
 def load_ledger(path: Path = LEDGER_PATH) -> dict[str, Any]:
     ledger: dict[str, Any] = json.loads(path.read_text())
-    if ledger.get("format") != LEDGER_FORMAT or ledger.get("project") != PROJECT:
-        raise GuardError(f"{path}: unrecognised ledger format/project")
-    if not ledger.get("releases"):
-        raise GuardError(f"{path}: ledger records no releases; refusing to vacuously pass")
-    if set(ledger) != {"format", "project", "source", "releases", "historical_violations",
-                       "unreleased"}:
-        raise GuardError(f"{path}: unexpected ledger keys {sorted(ledger)}")
+    if check_ledger(ledger):
+        raise GuardError(f"{path}: invalid baseline manifest")
     return ledger
 
 
 def check_ledger(
     ledger: Mapping[str, Any],
-    frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
+    frozen: Mapping[str, frozenset[str]] | None = None,
 ) -> list[str]:
-    """Internal consistency, and the expected migration set it implies."""
-    problems: list[str] = []
-    releases = ledger["releases"]
-    multi = {n: frozenset(d) for n, d in _multiplicity(releases).items()}
-    if multi != dict(frozen):
-        problems.append(
-            f"released migration bytes differ between releases beyond the frozen pair: {multi}"
+    expected_keys = {"format", "project", "source", "baseline_version", "baseline"}
+    if (
+        set(ledger) != expected_keys
+        or ledger.get("format") != LEDGER_FORMAT
+        or ledger.get("project") != PROJECT
+        or ledger.get("baseline_version") != 1
+    ):
+        return ["unrecognized baseline manifest format/project/version"]
+    baseline = ledger.get("baseline")
+    if (
+        not isinstance(baseline, dict)
+        or set(baseline) != BASELINE_FILES
+        or any(
+            not isinstance(v, str) or not re.fullmatch(r"[0-9a-f]{64}", v)
+            for v in baseline.values()
         )
-    if {n: frozenset(d) for n, d in ledger["historical_violations"].items()} != multi:
-        problems.append("ledger historical_violations does not match its own releases")
-    latest = releases[max(releases, key=_version_key)]["migrations"]
-    ever = {n for e in releases.values() for n in e["migrations"]}
-    if ever - set(latest):
-        dropped = sorted(ever - set(latest))
-        problems.append(f"the latest release dropped published migrations {dropped}")
-    head = max((int(n[:3]) for n in ever), default=-1)
-    unreleased = ledger["unreleased"]
-    for name, digest in unreleased.items():
-        if MIGRATION_NAME.fullmatch(name) is None or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            problems.append(f"unreleased entry {name!r}: bad name or digest")
-        elif name in ever:
-            problems.append(f"unreleased entry {name} is already published")
-        elif int(name[:3]) <= head:
-            problems.append(f"unreleased {name} does not sort after the published head {head:03d}")
-    numbers = [n[:3] for n in [*latest, *unreleased]]
-    if len(numbers) != len(set(numbers)):
-        problems.append("two migrations share a version number")
-    return problems
+    ):
+        return ["baseline must pin exactly schema.sql and workflow.schema.json"]
+    return []
 
 
 def expected_migrations(ledger: Mapping[str, Any]) -> dict[str, str]:
-    releases = ledger["releases"]
-    latest = dict(releases[max(releases, key=_version_key)]["migrations"])
-    return {**latest, **ledger["unreleased"]}
+    return dict(ledger["baseline"])
 
 
 def _compare(actual: Mapping[str, str], expected: Mapping[str, str], where: str) -> list[str]:
     problems = []
     for name in sorted(set(expected) - set(actual)):
-        problems.append(f"{where}: missing migration {name}")
+        problems.append(f"{where}: missing baseline resource {name}")
     for name in sorted(set(actual) - set(expected)):
-        problems.append(f"{where}: undeclared migration {name} (declare it under 'unreleased')")
+        problems.append(f"{where}: undeclared baseline resource {name}")
     for name in sorted(set(actual) & set(expected)):
         if actual[name] != expected[name]:
             problems.append(f"{where}: {name} bytes differ from the ledger")
@@ -1075,10 +903,7 @@ def check_dist(
         for p in entries
         if p not in (*wheels, *sdists)
         and not (
-            p.name == ".gitignore"
-            and not p.is_symlink()
-            and p.is_file()
-            and p.read_bytes() == b"*"
+            p.name == ".gitignore" and not p.is_symlink() and p.is_file() and p.read_bytes() == b"*"
         )
     )
     if not wheels or not sdists or others:
@@ -1127,7 +952,8 @@ def check_dist(
                     for name, members in direct_members.items():
                         if members != rebuilt_members:
                             changed = sorted(
-                                k for k in set(members) | set(rebuilt_members)
+                                k
+                                for k in set(members) | set(rebuilt_members)
                                 if members.get(k) != rebuilt_members.get(k)
                             )
                             problems.append(
@@ -1151,60 +977,40 @@ def check_dist(
     return problems
 
 
-def check_tree(ledger: Mapping[str, Any], repo_root: Path = REPO_ROOT,
-               frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS) -> list[str]:
-    """Early signal: migrations/ holds exactly the expected files, nothing else."""
-    problems = check_ledger(ledger, frozen)
-    for forbidden in FORBIDDEN_SOURCE_DIRS:
-        if (repo_root / forbidden).exists():
-            problems.append(f"{forbidden} must not exist (the runner would prefer it)")
-    actual: dict[str, str] = {}
-    for p in sorted((repo_root / SDIST_MIGRATIONS).iterdir()):
-        if p.is_symlink() or not p.is_file() or MIGRATION_NAME.fullmatch(p.name) is None:
-            problems.append(f"migrations/{p.name}: not a canonical migration file")
-        else:
-            actual[p.name] = _sha(p.read_bytes())
-    return problems + _compare(actual, expected_migrations(ledger), "migrations/")
+def check_tree(
+    ledger: Mapping[str, Any],
+    repo_root: Path = REPO_ROOT,
+    frozen: Mapping[str, frozenset[str]] | None = None,
+) -> list[str]:
+    problems = check_ledger(ledger)
+    for retired in FORBIDDEN_SOURCE_DIRS:
+        if (repo_root / retired).exists():
+            problems.append(f"{retired} must not exist: the old chain is retired")
+    package = repo_root / "src/regista"
+    actual = {}
+    for path in package.iterdir():
+        if path.name in BASELINE_FILES or path.suffix.lower() == ".sql":
+            if path.is_symlink() or not path.is_file():
+                problems.append(f"{path.name}: baseline must be a regular file")
+            else:
+                actual[path.name] = _sha(path.read_bytes())
+    return problems + _compare(actual, expected_migrations(ledger), "src/regista/")
 
 
-def check_release(ledger: Mapping[str, Any], version: str, repo_root: Path = REPO_ROOT,
-                  frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS) -> list[str]:
-    problems = []
-    known = sorted(ledger["releases"], key=_version_key)
-    if version in ledger["releases"]:
-        problems.append(f"{version} is already published")
-    elif _version_key(version) <= _version_key(known[-1]):
-        problems.append(f"{version} does not sort after the latest release {known[-1]}")
-    return problems + check_tree(ledger, repo_root, frozen)
-
-
-def verify_ledger(committed: Mapping[str, Any], fresh: Mapping[str, Any]) -> list[str]:
-    problems = []
-    for v in sorted(set(fresh) - set(committed["releases"]), key=_version_key):
-        problems.append(f"PyPI release {v} is not in the ledger; run `build` and commit")
-    for v in sorted(set(committed["releases"]) - set(fresh), key=_version_key):
-        problems.append(
-            f"ledger release {v} is no longer on PyPI. This guard makes no claim about "
-            "deleted releases: a human must decide (stores may still hold its bytes)"
-        )
-    for v in sorted(set(fresh) & set(committed["releases"]), key=_version_key):
-        if fresh[v] != committed["releases"][v]:
-            problems.append(f"ledger release {v} differs from what PyPI serves")
-    if _multiplicity(fresh) != committed["historical_violations"]:
-        problems.append("historical_violations differs from PyPI")
+def check_release(
+    ledger: Mapping[str, Any], version: str, repo_root: Path = REPO_ROOT
+) -> list[str]:
+    problems = check_tree(ledger, repo_root)
+    if _version_key(version) < (0, 8, 0):
+        problems.append("the reduced baseline must not publish as a pre-0.8 release")
     return problems
-
-
-def _canonical(obj: Any) -> str:
-    return json.dumps(obj, indent=2, sort_keys=True) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="published-migration immutability guard")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check-tree")
-    sub.add_parser("verify-ledger")
-    sub.add_parser("build")
+    sub.add_parser("verify-baseline")
     rel = sub.add_parser("check-release")
     rel.add_argument("--version", required=True)
     dist = sub.add_parser("check-dist")
@@ -1226,28 +1032,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(args: argparse.Namespace, label: str) -> int:
     try:
-        if args.cmd == "build":
-            prior = load_ledger() if LEDGER_PATH.exists() else None
-            releases = build_releases()
-            unreleased = dict((prior or {}).get("unreleased", {}))
-            for entry in releases.values():
-                for name, digest in entry["migrations"].items():
-                    if name in unreleased:
-                        if unreleased.pop(name) != digest:
-                            raise GuardError(f"{name} was released with undeclared bytes")
-            LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
-            LEDGER_PATH.write_text(_canonical({
-                "format": LEDGER_FORMAT, "project": PROJECT,
-                "source": "PyPI artifacts; regenerate with "
-                          "`python scripts/check_published_migrations.py build`",
-                "releases": releases, "historical_violations": _multiplicity(releases),
-                "unreleased": dict(sorted(unreleased.items())),
-            }))
-            print(f"wrote {LEDGER_PATH} ({len(releases)} releases)")
-            return 0
         ledger = load_ledger()
-        if args.cmd == "verify-ledger":
-            problems = verify_ledger(ledger, build_releases()) + check_ledger(ledger)
+        if args.cmd == "verify-baseline":
+            problems = check_tree(ledger)
         elif args.cmd == "check-release":
             problems = check_release(ledger, args.version)
         elif args.cmd == "check-dist":
