@@ -1,0 +1,137 @@
+# Plan 032 F5 — 0.8.0 release preparation (no publication)
+
+Prepared 2026-10-05. **Exact candidate commit:
+`73b3f2efaedca52a8a4c964a8b78e33447615a8f`**, branch `feat/wi364-f1-promote`,
+draft [PR #93](https://github.com/hraedon/regista/pull/93). Later evidence-only
+commits on that branch do not change any packaged input. Do not infer publication
+from the version bump: no tag, upload, workflow dispatch, yank or settings change
+was authorized or performed.
+
+## Qualified artifacts and metadata
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `regista_hraedon-0.8.0-py3-none-any.whl` | `a5881f537b5495f6bb78a5e079122c57e7cc4d3965d1dfa42dcd8c8badb555b4` |
+| `regista_hraedon-0.8.0.tar.gz` | `f7c2a8066f993f09d3ef149f710536d318bd1074d4812e7aefe5625f1b6812b8` |
+
+[F3 qualification](032-f3-qualification.md) records clean wheel/sdist installs,
+installed resources/scenarios, restart, rollback/contention, terminated-worker
+fencing, whole-namespace replay, separate restore **plus another valid write**,
+and unchanged old schemas built from `84bb2ec` migrations.
+
+Metadata inspection found Name `regista-hraedon`, Version `0.8.0`, Requires-Python
+`>=3.11`, Python classifiers 3/3.11/3.12/3.13/3.14 and only the `dev` extra.
+Runtime dependencies are `psycopg[binary]>=3.2,<4`, `psycopg-pool>=3.2,<4`,
+`pyyaml>=6.0`, and `jsonschema>=4.21`. `pyproject.toml` and `uv.lock` agree;
+there is no package `__version__` to bump. Remaining 0.7.2 literals are historical
+refusal/test vectors, preservation guidance or old release history, not current
+version declarations. `uv lock --check` passes. No speculative Python upper cap
+was added (D13).
+
+The wheel contains the explicit facade, kernel, CLI, `py.typed`, both schema
+resources, four example script/YAML resources, entry point, metadata and license
+(15 members including RECORD). The sdist contains 64 regular members under its
+single versioned root: retained source, examples/tests/scripts/hooks, CI,
+publication declaration, README/metadata/license and test-operation files.
+Retired migrations/sidecar implementations are absent. Current Git-only reference
+docs and qualification reports are not distribution inputs. README is the wheel
+long description; `uvx twine check dist/*` passes for both artifacts.
+
+## Tag workflow and byte equivalence
+
+`.github/workflows/publish.yml` is triggered by a pushed **`v*` tag**. Its verify
+job checks tagged package version against the tag, baseline/PyPI binding, lint,
+types and the PostgreSQL suite on 3.14. The build job checks out the full tagged
+history, sets up Python 3.14, runs `uv build` (sdist, then wheel from sdist), runs
+`check-dist --authoritative` and `uvx twine check`, and uploads `dist`. The publish
+job downloads **that build job's artifacts** and runs
+`uv publish --trusted-publishing always` in environment `pypi` with OIDC permission.
+It does not rebuild in the publish job. A tag push is a publication action.
+
+The build job **does rebuild**, rather than consuming a locally reviewed upload.
+A fresh full-depth `git clone --no-local --no-hardlinks` of the artifact-bearing
+tree, followed by the same `uv build`, produced **byte-identical wheel and sdist
+SHA-256 hashes above**. The final candidate also includes explicit removal lists and the measured
+mutation-control timeout correction. It was rebuilt again in that independent
+clone; both hashes above remained identical to the final local artifacts. Rebuild tooling was uv 0.12.23
+with the complete pinned Hatch backend closure in `pyproject.toml` (Hatchling
+1.32.4). The [final gate record](032-f3-final-gates.json) records the after-last-edit build
+and digest comparison; publication must still retain the qualified hashes.
+
+The #65 guard additionally validates exact candidate members against committed
+HEAD, schema pins, metadata/RECORD, names, archive structures and modes. It rebuilds
+each sdist with **both pip and uv**, comparing **every wheel member's bytes and
+mode**, including generated metadata. That is content/mode equivalence, not a
+claim that arbitrary ZIP compression/timestamps give identical raw archives.
+The observed fresh-clone raw hashes supply the stronger byte-identity evidence
+for this candidate and tooling. Owner should compare the actual tag build's
+downloaded artifact hashes again before permitting upload if tooling changes.
+`check-dist: ok` was obtained under `env -i`, an empty HOME, replacement objects
+off, no system/global git config, a full-depth independent clone and no alternates.
+
+The ordinary CI matrix covers 3.11–3.14; the successful artifact-bearing
+[run 37275016486](https://github.com/hraedon/regista/actions/runs/37275016486)
+at `a5b0797a17fb22cabd83d2f4b1a85cfbab716f2a` covers the kernel and package
+resources before the test-harness timeout correction. The exact
+candidate's [run 37276210043](https://github.com/hraedon/regista/actions/runs/37276210043)
+passed all four kernel jobs, the lockfile check and the authoritative artifact
+job on the exact candidate. Reconfirm the final selected commit's verdict before
+release.
+The final evidence-only branch tip also receives its own CI run.
+
+## Owner-side prerequisites — must be confirmed by owner
+
+These are the workflow comments' prerequisites, **not verified from this repo**:
+
+- [ ] PyPI trusted publisher registered for the actual repository owner/name,
+  workflow filename `publish.yml`, environment **`pypi`**, project
+  **`regista-hraedon`**. Old #70 tag runs failed with `invalid-publisher`; repo
+  source does not prove PyPI registration is now correct.
+- [ ] GitHub `pypi` environment requires a reviewer, prevents self-review,
+  disallows administrator bypass, and restricts deployment refs to **main** and
+  **v*** tags. Owner confirms these effective settings.
+- [ ] Main is protected, and the **v*** tag ruleset controls tag creation.
+  Environment/ref protection must constrain modified workflows as the comments
+  describe; an `if:` inside a modifiable workflow is not that boundary.
+- [ ] Review the exact candidate and the three already supplied cross-lineage
+  kernel reviews/fixes; confirm final CI and artifact hashes before publication.
+- [ ] Resolve D8's remaining human quickstart walkthrough, or explicitly record
+  the owner's disposition. The preserved
+  [D8 report](032-f0-inventory/d8-quickstart-walkthrough.md) is **partial**, and
+  `032-open-decisions.md` still calls it open. Tested snippets and package runs
+  do not substitute for that unfamiliar person's experience.
+- [ ] Confirm the D9 private-estate checkout pin/caps in their own workstream
+  before reducing main. This preparation makes no private-repository change and
+  does not assert the historical unpushed correction was delivered.
+- [ ] If desired, separately authorize the workflow's OIDC preflight dispatch.
+  **No dispatch was performed here**, including the uploads-nothing preflight.
+- [ ] Explicitly authorize publication/tag push. Set the 0.8.0 changelog/release
+  publication date and **stabilization end date = publication date + 90 days**
+  (D11); candidate notes remain `Unreleased`. GitHub issues are the public
+  reporting route and plm@hraedon.com is the private sensitive-report route.
+- [ ] Separately decide/authorize the [D12 yank recommendations](032-d12-yank-assessment.md).
+  Yanking older Regista releases is recommended where possible, **non-blocking**;
+  no unrelated `substrate` SDK file should be yanked on this assessment.
+
+## Post-publication verification — owner-authorized release step
+
+1. Read `https://pypi.org/pypi/regista-hraedon/0.8.0/json`; verify project/version,
+   dependency/classifier/Requires-Python metadata, filenames and both SHA-256
+   digests against the qualified/tag-build artifacts. Download the wheel and
+   sdist and compute their digests independently; a metadata digest alone is
+   not an independent download check.
+2. From an empty directory and fresh venv, install explicitly from PyPI:
+   `python -m pip install --no-cache-dir --index-url https://pypi.org/simple
+   regista-hraedon==0.8.0`. Verify installed metadata/import path, `regista --help`,
+   schema resources, and a disposable-database example/read/write. Use no source
+   checkout or private configuration on the import path.
+3. Run #65's live PyPI binding from the candidate checkout:
+   `python scripts/check_published_migrations.py verify-ledger` and
+   `python scripts/check_published_migrations.py check-release --version 0.8.0`.
+   Require a successful **published-wheel binding**; the current prepublication
+   message `no published 0.8.x release yet; PyPI binding not applicable` is not
+   acceptable after uploading 0.8.0. Also rerun `verify-baseline` and the
+   authoritative artifact guard on the exact downloaded/build bytes as appropriate.
+4. Only then declare publication complete and record public artifact hashes,
+   maintenance dates and the owner's yank disposition. None of these
+   post-publication actions was performed during this preparation.
