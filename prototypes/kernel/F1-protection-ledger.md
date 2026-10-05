@@ -135,7 +135,7 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_remaining_errors.py::TestCustomFieldViolation::test_wrong_type_on_create` | PORTED | `prototypes/kernel/tests/test_f1_fields.py::test_declared_field_refusals[type-create]` |  | 1/1 nodes; recipes below |
 | `tests/test_remaining_errors.py::TestCustomFieldViolation::test_invalid_enum_on_create` | PORTED | `prototypes/kernel/tests/test_f1_fields.py::test_declared_field_refusals[enum-create]` |  | 1/1 nodes; recipes below |
 | `tests/test_remaining_errors.py::TestCustomFieldViolation::test_custom_field_violation_on_transition` | PORTED | `prototypes/kernel/tests/test_f1_fields.py::test_declared_field_refusals[type-transition]` |  | 1/1 nodes; recipes below |
-| `tests/test_remaining_errors.py::TestDbNotFound::test_connect_without_create_rejects` | UNRESOLVED | `UNRESOLVED` | connect() permits an empty destination so initialize() can run. No read-only/open-existing mode currently refuses a missing schema. | No replacement claim |
+| `tests/test_remaining_errors.py::TestDbNotFound::test_connect_without_create_rejects` | PORTED | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[missing]` | Explicit connect/initialize creates the baseline; require_existing refuses missing/empty destinations without writes. See Stage A2 opening choice below. | 2 new refusal nodes mutation-proven; initializer proof retained |
 | `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_heartbeat_rejects_different_actor` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[actor]` |  | 1/1 nodes; recipes below |
 | `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_heartbeat_rejects_after_auto_steal` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[takeover]` |  | 1/1 nodes; recipes below |
 | `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_valid_heartbeat_succeeds` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_extension` |  | 1/1 nodes; recipes below |
@@ -185,9 +185,9 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_wi242_readonly.py::TestReplayNoResidue::test_replay_leaves_no_permanent_replay_tables` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_read_only_no_temp_residue` | Read-only public get/replay, repeated runs, no temporary-table catalog residue. Per-item result tuple replaces replay report entries/table_name. | 1/1 nodes; recipes below |
 | `tests/test_wi242_readonly.py::TestReplayReadOnly::test_replay_works_under_read_only` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_read_only_no_temp_residue` | Read-only public get/replay, repeated runs, no temporary-table catalog residue. Per-item result tuple replaces replay report entries/table_name. | 1/1 nodes; recipes below |
 | `tests/test_wi242_readonly.py::TestConnectReadOnly::test_read_only_connect_succeeds_on_migrated_schema` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_read_only_no_temp_residue` | Read-only public get/replay, repeated runs, no temporary-table catalog residue. Per-item result tuple replaces replay report entries/table_name. | 1/1 nodes; recipes below |
-| `tests/test_wi242_readonly.py::TestConnectReadOnly::test_read_only_connect_fails_closed_on_missing_schema` | UNRESOLVED | `UNRESOLVED` | Kernel connect has no read-only/open-existing startup mode; initializer refusals are separate and do not carry this exact assertion. | No replacement claim |
-| `tests/test_wi242_readonly.py::TestConnectReadOnly::test_read_only_connect_fails_closed_on_missing_migrations_table` | UNRESOLVED | `UNRESOLVED` | Kernel connect has no read-only/open-existing startup mode; initializer refusals are separate and do not carry this exact assertion. | No replacement claim |
-| `tests/test_wi242_readonly.py::TestConnectReadOnly::test_normal_connect_creates_migrations_table` | UNRESOLVED | `UNRESOLVED` | Kernel connect has no read-only/open-existing startup mode; initializer refusals are separate and do not carry this exact assertion. | No replacement claim |
+| `tests/test_wi242_readonly.py::TestConnectReadOnly::test_read_only_connect_fails_closed_on_missing_schema` | PORTED | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[missing]` | Explicit connect/initialize creates the baseline; require_existing refuses missing/empty destinations without writes. See Stage A2 opening choice below. | 2 new refusal nodes mutation-proven; initializer proof retained |
+| `tests/test_wi242_readonly.py::TestConnectReadOnly::test_read_only_connect_fails_closed_on_missing_migrations_table` | PORTED | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[empty]` | Explicit connect/initialize creates the baseline; require_existing refuses missing/empty destinations without writes. See Stage A2 opening choice below. | 2 new refusal nodes mutation-proven; initializer proof retained |
+| `tests/test_wi242_readonly.py::TestConnectReadOnly::test_normal_connect_creates_migrations_table` | PORTED | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_catalog_roundtrip` | Explicit connect/initialize creates the baseline; require_existing refuses missing/empty destinations without writes. See Stage A2 opening choice below. | 2 new refusal nodes mutation-proven; initializer proof retained |
 | `tests/test_wi242_readonly.py::TestReplayEntriesPortable::test_normal_mode_populates_entries` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_read_only_no_temp_residue` | Read-only public get/replay, repeated runs, no temporary-table catalog residue. Per-item result tuple replaces replay report entries/table_name. | 1/1 nodes; recipes below |
 | `tests/test_wi242_readonly.py::TestReplayEntriesPortable::test_read_only_mode_populates_entries` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_read_only_no_temp_residue` | Read-only public get/replay, repeated runs, no temporary-table catalog residue. Per-item result tuple replaces replay report entries/table_name. | 1/1 nodes; recipes below |
 | `tests/test_wi242_readonly.py::TestReplayEntriesPortable::test_entries_round_trip_with_warnings` | UNRESOLVED | `UNRESOLVED` | Kernel replay exposes per-item state/fields/drift, not report entries with numeric warnings. A clean read-only replay does not test that old report serialization assertion. | No replacement claim |
@@ -394,6 +394,27 @@ an inventory-only row is not evidence permitting whole-file deletion.
 | `tests/test_wi266_fail_closed.py` | 17 individually mapped rows above |
 | `tests/test_wi289_v6_counterparts.py` | UNRESOLVED: caller inventory only; unnamed PORT/SPLIT assertions not yet individually retargeted |
 | `tests/test_work_item_ref_validation.py` | 20 individually mapped rows above |
+
+## Stage A2: opening an existing project
+
+`Kernel.connect(dsn, schema=..., require_existing=True)` validates the supported
+`kernel_meta` marker before returning a handle. Missing or empty schemas refuse
+with `UnsupportedSchemaError`; the validation transaction rolls back, and a
+failed opener closes its pool. The default still only opens a pool so callers
+can explicitly `initialize()` an empty destination. Neither path creates a
+PostgreSQL namespace. Every database CLI command except `init` now requires an
+existing kernel schema; document validation remains independent of the database.
+This optional keyword preserves the existing connect/initialize sequence and
+keeps initialization an explicit action.
+
+Failing-first evidence: the two API refusal nodes failed on the absent keyword;
+all 16 CLI inspection nodes failed on the old `DatabaseOperationError` envelope.
+After implementation all 19 new nodes passed. Scratch mutation
+`open_existing_gate_removed` bypasses validation: both refusal tests fail with
+DID NOT RAISE. `cli_existing_gate_removed` removes the CLI keyword: all 16
+inspection nodes fail on the wrong error envelope. The scratch runner's
+unmodified control passed before either mutation. These are assertion failures,
+not setup errors. Supported existing schemas retain their data/history/counts.
 
 ## Mutation proof
 

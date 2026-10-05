@@ -510,3 +510,10 @@ second engine."
 The maintainer decides. If the decision goes the other way, the scenario and the
 mutation checks still apply unchanged to a severed kernel — they test the
 contract, not this implementation.
+
+
+Opening an existing project uses `Kernel.connect(dsn, schema="project",
+require_existing=True)`. Missing, empty and unsupported schemas raise
+`UnsupportedSchemaError` without writes. The default opens a pool for the
+explicit `initialize()` sequence; it creates no namespace or tables on its own.
+All database CLI commands except `init` use the existing-project path.

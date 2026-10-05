@@ -352,3 +352,30 @@ def test_cli_missing_dsn(schema: str, command: str, as_json: bool) -> None:
     assert "no DSN" in result.stderr and "Traceback" not in result.stderr
     if as_json:
         assert json.loads(result.stdout)["exit_code"] == 2
+
+
+@pytest.mark.parametrize("destination", ["missing", "empty"])
+@pytest.mark.parametrize("command", ["health", "list", "workflow_list", "workflow_show",
+                                     "show", "history", "replay", "lease"])
+def test_cli_inspection_requires_existing(
+    dsn: str, schema: str, destination: str, command: str,
+) -> None:
+    if destination == "missing":
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(SQL("DROP SCHEMA {}").format(Identifier(schema)))
+    args = {
+        "workflow_list": ["workflow", "list"],
+        "workflow_show": ["workflow", "show", "review"],
+        "health": ["health"], "list": ["list"],
+    }.get(command, [command, str(uuid.uuid4())])
+    result = cli(dsn, schema, args)
+    assert result.returncode == 2 and "Traceback" not in result.stderr
+    assert json.loads(result.stdout)["error"] == "UnsupportedSchemaError"
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=%s", (schema,),
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT count(*) FROM pg_namespace WHERE nspname=%s", (schema,),
+        ).fetchone() == ((0,) if destination == "missing" else (1,))

@@ -333,3 +333,35 @@ def test_unsupported_schema_cannot_write(
         registered.links_from(a.id),
     ) == before
     assert registered.health()["work_items"] == 2
+
+
+@pytest.mark.parametrize("destination", ["missing", "empty"])
+def test_open_existing_refuses_without_writes(
+    dsn: str, schema: str, destination: str,
+) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if destination == "missing":
+            conn.execute(SQL("DROP SCHEMA {}").format(Identifier(schema)))
+        before = conn.execute(
+            "SELECT n.oid, c.oid FROM pg_namespace n LEFT JOIN pg_class c "
+            "ON c.relnamespace=n.oid WHERE n.nspname=%s ORDER BY c.oid", (schema,),
+        ).fetchall()
+    with pytest.raises(UnsupportedSchemaError):
+        opened = Kernel.connect(dsn, schema=schema, require_existing=True)
+        opened.close()  # close a defective opener before pytest reports the failure
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT n.oid, c.oid FROM pg_namespace n LEFT JOIN pg_class c "
+            "ON c.relnamespace=n.oid WHERE n.nspname=%s ORDER BY c.oid", (schema,),
+        ).fetchall() == before
+
+
+def test_open_existing_supported_schema(registered: Kernel, dsn: str, schema: str) -> None:
+    item = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    opened = Kernel.connect(dsn, schema=schema, require_existing=True)
+    try:
+        assert opened.get(item.id) == item
+        assert opened.history(item.id) == registered.history(item.id)
+        assert opened.health() == registered.health()
+    finally:
+        opened.close()

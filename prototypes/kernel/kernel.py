@@ -1109,11 +1109,17 @@ class Kernel:
         dsn: str,
         *,
         schema: str = "public",
+        require_existing: bool = False,
         pool_min_size: int = 1,
         pool_max_size: int = 4,
         pool_timeout: float = 5.0,
     ) -> Kernel:
         """Open a bounded pool for one project schema.
+
+        ``require_existing=True`` refuses missing, empty or unsupported schemas
+        without writes. Use it when opening an existing project. The default
+        only opens the pool, permitting explicit initialize() on an empty
+        destination; connect() itself never creates a schema or tables.
 
         ``pool_max_size`` is a hard connection bound. An operation that cannot
         check out a connection within ``pool_timeout`` raises PoolExhaustedError.
@@ -1189,13 +1195,25 @@ class Kernel:
                     f"(configured min={pool_min_size}, max={pool_max_size})"
                 ) from exc
             raise
-        return cls(
+        handle = cls(
             pool,
             schema,
             pool_min_size=pool_min_size,
             pool_max_size=pool_max_size,
             pool_timeout=pool_timeout,
         )
+        if require_existing:
+            try:
+                handle._check_existing_schema()
+            except BaseException:
+                handle.close()
+                raise
+        return handle
+
+    @_pooled_operation
+    def _check_existing_schema(self) -> None:
+        self._require_writable_schema(self._conn)
+        self._end_read()
 
     def close(self) -> None:
         self._finalizer.detach()

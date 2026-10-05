@@ -81,7 +81,7 @@ def _kernel(args: argparse.Namespace) -> Kernel:
     dsn = args.dsn or os.environ.get("REGISTA_DSN")
     if not dsn:
         raise KernelError("no DSN: pass --dsn or set REGISTA_DSN")
-    return Kernel.connect(dsn, schema=args.schema)
+    return Kernel.connect(dsn, schema=args.schema, require_existing=args.command != "init")
 
 
 def _emit(obj: Any, as_json: bool) -> None:

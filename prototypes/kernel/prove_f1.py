@@ -82,6 +82,16 @@ def materialize(source: str) -> str:
 
 # Each selector names assertions the corresponding defect MUST kill.
 MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
+    (
+        "open_existing_gate_removed", "kernel.py",
+        replace_once("if require_existing:", "if False:"),
+        "test_open_existing_refuses_without_writes",
+    ),
+    (
+        "cli_existing_gate_removed", "cli.py",
+        replace_once('require_existing=args.command != "init"', 'require_existing=False'),
+        "test_cli_inspection_requires_existing",
+    ),
     ("lease_fencing", "kernel.py", fencing, "test_transition_fencing"),
     (
         "heartbeat_owner_attempt_expiry",
@@ -642,11 +652,11 @@ def main() -> int:
             if name.startswith("namespace_shared"):
                 changed = original
                 changed = changed.replace(
-                    "        return cls(\n            pool,\n            schema,",
+                    "        handle = cls(\n            pool,\n            schema,",
                     "        global _F1_FIRST_SCHEMA\n"
                     "        if '_F1_FIRST_SCHEMA' not in globals():\n"
                     "            _F1_FIRST_SCHEMA = schema\n"
-                    "        return cls(\n            pool,\n            _F1_FIRST_SCHEMA,",
+                    "        handle = cls(\n            pool,\n            _F1_FIRST_SCHEMA,",
                 )
             if changed == original:
                 raise AssertionError(f"{name}: mutation changed nothing")
