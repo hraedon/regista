@@ -29,8 +29,9 @@ reset, or automatic project removal. Preserve first using [operations.md](operat
 
 Old administration commands for provisioning, project catalogs, trust/signing,
 principal lifecycle, witness/anchors, bundles, hooks, recurrence, sidecar, and
-suite discovery are removed. Unknown commands refuse via the CLI parser. Only
-`dev` remains as an optional dependency extra; all old feature extras are gone.
+suite discovery are removed. Unknown commands refuse via the CLI parser. Removed extras are **`sidecar`, `ed25519`, `encryption`, `vendor-check`, `vault`,
+`azure`, and `windows`**. Only `dev` remains; its suite-conformance dependency is
+also retired.
 The workflow format is `kernel_workflow: 1` and its JSON Schema ships in the
 package; it is separate from both registry versions and the kernel schema version.
 The old machine-readable `spec.yaml` sidecar is retired.
@@ -48,3 +49,96 @@ and explicitly outside replay coverage. Preserve them through whole-database
 backup; no supported replay rebuild exists. See the trust/recovery limitations
 in [operations.md](operations.md). Retiring a vulnerable subsystem does not fix
 any older release that shipped it.
+
+## Explicit removed root exports
+
+The following formerly explicit root re-exports at the pre-cutover reference
+`84bb2ec` are absent (the old `Regista` class and its facade methods are also
+removed). Names such as `Claim` and `Event` that remain have new result shapes;
+name overlap does not promise old signatures or semantics.
+
+`ActionDelegationCredential`, `ActionDelegationError`, `ActionDelegationScope`, `ActorKind`, `ActorMetadata`, `ActorRole`, `Applicability`, `Approval`, `ApprovalVerifier`, `AssuranceLevel`, `AuthorizationEvidence`, `BundleReferents`, `ChallengeStorageScope`, `CustodyMode`, `DeadLetterEntry`, `DelegationVerificationStatus`, `EffectiveReceipt`, `EffectiveReceiptStatus`, `EnrollmentRequest`, `EnvelopeVersion`, `GateProfile`, `GenesisRecovery`, `HookContext`, `LifecycleAuthority`, `LifecycleAuthorityKind`, `LifecycleContractError`, `LifecycleDigest`, `LifecycleErrorCode`, `LifecycleOperation`, `LifecycleOperationType`, `LifecycleState`, `LineageRelation`, `Link`, `MODEL_LINEAGE_FAMILIES`, `NO_REFERENTS`, `PossessionChallenge`, `PossessionProof`, `PrincipalDescriptor`, `PrincipalKind`, `PrincipalLifecycle`, `Producer`, `ProjectCatalogEntry`, `ProofFormat`, `QueryPage`, `ReconciliationReport`, `ReconciliationStatus`, `RegistryReceipt`, `RegistryReceiptStatus`, `ReplayReport`, `ReplayReportEntry`, `RevocationRequest`, `RotationRequest`, `TrustLogVerificationReport`, `V6GenesisWrite`, `ValidationError`, `ValidationResult`, `VerificationPolicy`, `VerificationResult`, `VerifiedActionDelegation`, `VersionInfo`, `WorkflowDefinition`, `WorkflowVersion`, `_config`, `action_delegation_hash`, `bundle_referents`, `canonical_lifecycle_digest`, `canonical_workflow_yaml`, `chain_head_hash`, `compose_workflow`, `compute_assurance_level`, `gate_rationale`, `lineage_relation`, `make_verification_policy`, `parse_action_delegation`, `parse_and_validate`, `parse_file`, `parse_workflow_yaml`, `resolve_producer`, `same_lineage`, `secrets`, `validate_principal_id`, `validate_yaml`, `verify_event_with_referents`, `versions`.
+
+## Explicit removed command paths
+
+The old parser at `84bb2ec` defined the paths below; none is accepted by the new
+parser. The supported workflow register/validate/list/show paths use the new
+workflow format and flags. Current participation is through top-level create,
+show, list, claim, heartbeat, lease, release, transition, link/unlink and history;
+there is no alias for the old nested command or a projection-rebuilding replay.
+
+- `work-item`
+- `work-item show`
+- `work-item list`
+- `events`
+- `events show`
+- `events tail`
+- `events archive`
+- `bundle`
+- `bundle export`
+- `bundle verify`
+- `replay`
+- `schema`
+- `hooks`
+- `hooks dead-letter`
+- `hooks dead-letter list`
+- `hooks dead-letter requeue`
+- `actor-roles`
+- `actor-roles list`
+- `recurrence`
+- `recurrence list`
+- `recurrence fire`
+- `recurrence cancel`
+- `recurrence update`
+- `witness`
+- `witness list`
+- `witness deliver`
+- `witness receipts`
+- `workflow compose`
+- `work-item create`
+- `work-item transition`
+- `webhook`
+- `webhook register`
+- `webhook list`
+- `webhook remove`
+- `version`
+- `doctor`
+- `config`
+- `secrets`
+- `keys`
+- `keys fingerprint`
+- `keys adopt-enrollment`
+- `assurance`
+- `invariants`
+- `invariants probe`
+- `principal`
+- `principal list`
+- `principal register`
+- `principal rotate`
+- `principal enroll`
+- `principal resolve-backend-name`
+- `principal revoke`
+- `signer`
+- `signer generate`
+- `signer sign-possession`
+- `signer sign-effective`
+- `provision`
+- `provision-principal`
+- `trust`
+- `trust sign-genesis`
+- `trust verify-genesis`
+- `trust rebuild-projection`
+- `trust init-log`
+- `trust enroll`
+- `trust delegate-registrar`
+- `trust publish-log`
+- `trust sign-log`
+- `trust verify-log`
+- `trust catalog`
+- `trust sign-catalog`
+- `trust verify-catalog`
+- `genesis`
+- `genesis init`
+- `spec`
+- `spec sign`
+- `spec events`
