@@ -399,3 +399,27 @@ it has tests. The disposition pass defaulted this to RETIRE per that instruction
 but flagged it as **the one place where the exception reads as plausible rather
 than rhetorical**. Composition may be a small, genuinely independent feature.
 Worth a look before it goes.
+
+
+## F1 Stage A adopted defaults — 2026-10-05
+
+These are **adopted defaults under Plan 032 §3's removal default,
+reversible by the maintainer**. They are working assumptions, not maintainer
+rulings. F1 Stage A2 records them to make the assertion ledger reviewable.
+
+| Item | Disposition | Reason |
+| --- | --- | --- |
+| Service-role provisioning / dry-run (`test_provision.py`); CREATEROLE diagnostics (`test_doctor.py`) | retire | Not in the §3 keep table; role creation is an operator responsibility, which F4 must document. |
+| Project catalog registration / drop / unregister (`test_wi243_schema_leak.py`) | retire | No catalog in the kernel; F1 forbids automatic drop/reset, and F4 must document manual `DROP SCHEMA`. |
+| ValidationResult `to_dict` / `from_dict` (`test_validate_yaml.py` result-shape tests) | retire | Old private result shape; document validation and CLI refusal remain protected. |
+| `attempt_threshold` automatic escalation (`test_sf2_workflows.py`) | retire | Automatic escalation is scheduling policy; D4/D21. |
+| Replay entries with numeric warnings (`TestReplayEntriesPortable`) | retire | Kernel replay reports per-item drift; the old report shape was private. |
+| Wildcard idempotency lookups with `None` item / transition / actor (`TestCheckIdempotency`) | retire | Private API; public retries require item, actor and transition. |
+| Stored-workflow/library version compatibility at startup (`TestWorkflowVersionIncompatible`) | retire | 0.8.0 has a fresh single baseline and refuses old schemas before writes; revisit if a later release changes stored format. |
+| structlog embedding configuration and `retryable` error flag (`test_stream_discipline.py`) | retire | The kernel has no structlog and its error envelope makes no retryable claim. |
+| Actor-filtered / transition-filtered / composite history filters (§B events) | retire | Keep table promises ordered history, not filtered history; callers filter. |
+| Caller-chosen event id on create (§B `test_event_idempotency`) | retire | Idempotency keys cover safe retries. |
+| Actor-role registry (§B `TestConformanceActorRoles`) | retire | §1/§3: roles are caller-presented policy on a trusted host. |
+| `update_not_before` deferral (§B) | retire | Scheduling; D4. |
+| Nested JSON containment filter (§B) | retire | Keep table promises bounded filtering; kernel deliberately supports scalar equality only. |
+| Lease auto-release on transition (§B `test_claim_releases_on_transition`) | retire — **semantic change** | Kernel retains leases until explicit release; F0a handoff relies on it, F4 must state it, and the changelog must list the behaviour change. |
