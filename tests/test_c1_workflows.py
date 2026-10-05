@@ -25,7 +25,7 @@ def test_actions_and_uv_are_pinned(name: str) -> None:
                     assert step["with"]["version"] == "0.12.23"
                     assert step["with"]["checksum"] == UV_CHECKSUM
             if "twine check" in step.get("run", ""):
-                assert "twine==6.2.0" in step["run"]
+                assert "twine==7.0.0" in step["run"]
 
 
 def test_publish_requires_identifier_and_merged_commit() -> None:
