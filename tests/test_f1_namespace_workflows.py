@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+import psycopg
+import pytest
+import yaml
+from psycopg.sql import SQL, Identifier
+
+from regista import (
+    DatabaseOperationError,
+    InvalidWorkflowError,
+    Kernel,
+    UnsupportedSchemaError,
+    Workflow,
+    WorkItemNotFoundError,
+    load_workflow,
+    validate_workflow_document,
+)
+
+ROOT = Path(__file__).parents[1]
+
+
+def test_namespace_isolation(
+    registered: Kernel, dsn: str, schema_factory: Callable[[], str], workflow: Workflow
+) -> None:
+    other = schema_factory()
+    sibling = Kernel.connect(dsn, schema=other)
+    try:
+        sibling.initialize()
+        sibling.register_workflow(workflow)
+        a = registered.create_work_item(workflow="review", type="task", actor_id="w")
+        b = sibling.create_work_item(workflow="review", type="task", actor_id="w")
+        assert registered.list_items() == [a] and sibling.list_items() == [b]
+        registered.transition(a.id, transition="start", actor_id="w")
+        assert sibling.get(b.id) == b and sibling.replay(b.id) == ("new", {}, [])
+        with pytest.raises(WorkItemNotFoundError):
+            registered.history(b.id)
+    finally:
+        sibling.close()
+
+
+def test_supplied_schema_cannot_redirect(registered: Kernel, dsn: str, schema: str) -> None:
+    item = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    malicious = Kernel.connect(dsn, schema=f"absent, {schema}")
+    try:
+        with pytest.raises(DatabaseOperationError):
+            malicious.initialize()
+        with pytest.raises(DatabaseOperationError):
+            malicious.list_items()
+    finally:
+        malicious.close()
+    assert registered.get(item.id) == item and len(registered.history(item.id)) == 1
+
+
+def test_supplied_workflow_name_is_data(registered: Kernel) -> None:
+    with pytest.raises(InvalidWorkflowError):
+        registered.create_work_item(
+            workflow="review'; DROP TABLE events; --", type="task", actor_id="w"
+        )
+    assert registered.health()["events"] == 0 and len(registered.list_workflows()) == 1
+
+
+def test_concurrent_initialize(dsn: str, schema: str) -> None:
+    def initialize(_: int) -> int:
+        k = Kernel.connect(dsn, schema=schema)
+        try:
+            k.initialize()
+            return int(k.health()["schema_version"])
+        finally:
+            k.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert list(pool.map(initialize, range(8))) == [1] * 8
+
+
+def test_catalog_roundtrip(dsn: str, schema_factory: Callable[[], str]) -> None:
+    # The kernel's catalog equivalent is pg_namespace + its per-schema kernel_meta.
+    for _ in range(3):
+        name = schema_factory()
+        k = Kernel.connect(dsn, schema=name)
+        try:
+            k.initialize()
+            k.initialize()
+            assert k.health()["schema_version"] == 1
+        finally:
+            k.close()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(SQL("DROP SCHEMA {} CASCADE").format(Identifier(name)))
+            conn.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(Identifier(name)))
+            assert conn.execute(
+                "SELECT count(*) FROM pg_namespace WHERE nspname = %s", (name,)
+            ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE n.nspname = %s",
+                (name,),
+            ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("kind", ["legacy", "unknown", "version", "empty_meta"])
+def test_initialize_refuses_without_writes(dsn: str, schema: str, kind: str) -> None:
+    k = Kernel.connect(dsn, schema=schema)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            if kind in ("version", "empty_meta"):
+                k.initialize()
+                if kind == "version":
+                    conn.execute(
+                        SQL("UPDATE {}.kernel_meta SET kernel_schema_version=999").format(
+                            Identifier(schema)
+                        )
+                    )
+                else:
+                    conn.execute(SQL("DELETE FROM {}.kernel_meta").format(Identifier(schema)))
+            else:
+                table = "project_identity" if kind == "legacy" else "unrelated"
+                conn.execute(
+                    SQL("CREATE TABLE {}.{} (sentinel text)").format(
+                        Identifier(schema), Identifier(table)
+                    )
+                )
+                conn.execute(
+                    SQL("INSERT INTO {}.{} VALUES ('preserve')").format(
+                        Identifier(schema), Identifier(table)
+                    )
+                )
+            before = conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema=%s "
+                "ORDER BY table_name",
+                (schema,),
+            ).fetchall()
+        with pytest.raises(UnsupportedSchemaError):
+            k.initialize()
+        with psycopg.connect(dsn) as conn:
+            assert (
+                conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema=%s "
+                    "ORDER BY table_name",
+                    (schema,),
+                ).fetchall()
+                == before
+            )
+            if kind in ("legacy", "unknown"):
+                assert conn.execute(
+                    SQL("SELECT sentinel FROM {}.{}").format(Identifier(schema), Identifier(table))
+                ).fetchone() == ("preserve",)
+    finally:
+        k.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "name",
+        "states",
+        "initial",
+        "unknown_from",
+        "unknown_to",
+        "unreachable",
+        "undeclared_role",
+        "unused_role",
+        "duplicate_state",
+        "duplicate_transition",
+        "format_version",
+    ],
+)
+def test_document_semantic_refusals(kernel: Kernel, workflow: Workflow, case: str) -> None:
+    doc = workflow.as_document()
+    if case in ("name", "states"):
+        del doc[case]
+    elif case == "initial":
+        doc["states"][0].pop("initial")
+    elif case in ("unknown_from", "unknown_to"):
+        doc["transitions"][0]["from" if case == "unknown_from" else "to"] = "missing"
+    elif case == "unreachable":
+        doc["states"].append({"name": "orphan"})
+    elif case == "undeclared_role":
+        doc["transitions"][-2]["roles"] = ["typo"]
+    elif case == "unused_role":
+        doc["roles"].append("unused")
+    elif case == "duplicate_state":
+        doc["states"].append(doc["states"][0])
+    elif case == "duplicate_transition":
+        doc["transitions"].append(doc["transitions"][0])
+    else:
+        doc["kernel_workflow"] = 999
+    errors = validate_workflow_document(doc)
+    assert errors and all(isinstance(e, str) for e in errors)
+    with pytest.raises(InvalidWorkflowError):
+        kernel.register_workflow(Workflow.from_document(doc))
+    assert kernel.list_workflows() == []
+
+
+@pytest.mark.parametrize("format", ["yaml", "json"])
+def test_document_load_roundtrip(
+    kernel: Kernel, workflow: Workflow, tmp_path: Path, format: str
+) -> None:
+    path = tmp_path / f"workflow.{format}"
+    doc = workflow.as_document()
+    path.write_text(yaml.safe_dump(doc) if format == "yaml" else json.dumps(doc))
+    loaded = load_workflow(str(path))
+    assert loaded == workflow
+    assert validate_workflow_document(loaded.as_document()) == ()
+    assert kernel.register_workflow(loaded) == 1
+
+
+@pytest.mark.parametrize("case", ["syntax", "duplicate", "empty", "extension"])
+def test_load_refusals(tmp_path: Path, workflow: Workflow, case: str) -> None:
+    path = tmp_path / ("workflow.txt" if case == "extension" else "workflow.yaml")
+    path.write_text(
+        {
+            "syntax": "name: [",
+            "duplicate": yaml.safe_dump(workflow.as_document()) + "name: second\n",
+            "empty": "",
+            "extension": yaml.safe_dump(workflow.as_document()),
+        }[case]
+    )
+    with pytest.raises(InvalidWorkflowError):
+        load_workflow(str(path))
+
+
+def test_database_role_is_scoped(
+    registered: Kernel, dsn: str, schema: str, schema_factory: Callable[[], str], workflow: Workflow
+) -> None:
+    import uuid
+
+    from psycopg.sql import Literal
+
+    sibling_schema = schema_factory()
+    sibling = Kernel.connect(dsn, schema=sibling_schema)
+    role = "f1_role_" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    restricted: Kernel | None = None
+    redirected: Kernel | None = None
+    try:
+        sibling.initialize()
+        sibling.register_workflow(workflow)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}").format(
+                    Identifier(role), Literal(password)
+                )
+            )
+            conn.execute(
+                SQL("GRANT USAGE ON SCHEMA {} TO {}").format(Identifier(schema), Identifier(role))
+            )
+            conn.execute(
+                SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {} TO {}").format(
+                    Identifier(schema), Identifier(role)
+                )
+            )
+        params: dict[str, Any] = psycopg.conninfo.conninfo_to_dict(dsn)
+        params.update(user=role, password=password)
+        scoped_dsn = psycopg.conninfo.make_conninfo(**params)
+        restricted = Kernel.connect(scoped_dsn, schema=schema)
+        made = restricted.create_work_item(workflow="review", type="task", actor_id="w")
+        assert restricted.get(made.id) == made
+        redirected = Kernel.connect(scoped_dsn, schema=sibling_schema)
+        with pytest.raises(DatabaseOperationError):
+            redirected.list_items()
+        assert sibling.health()["work_items"] == 0
+    finally:
+        if restricted is not None:
+            restricted.close()
+        if redirected is not None:
+            redirected.close()
+        sibling.close()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            # Scoped to a unique disposable role; remove its grants before DROP.
+            conn.execute(SQL("DROP OWNED BY {}").format(Identifier(role)))
+            conn.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
+
+
+@pytest.mark.parametrize("metadata", ["unsupported", "missing"])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "workflow",
+        "create",
+        "claim",
+        "heartbeat",
+        "release",
+        "sweep",
+        "transition",
+        "link",
+        "remove_link",
+    ],
+)
+def test_unsupported_schema_cannot_write(
+    registered: Kernel, dsn: str, schema: str, workflow: Workflow, metadata: str, operation: str
+) -> None:
+    a = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    b = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    registered.link(a.id, b.id, "blocks")
+    if operation in ("heartbeat", "release", "transition"):
+        registered.claim(a.id, actor_id="w")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if metadata == "unsupported":
+            conn.execute(
+                SQL("UPDATE {}.kernel_meta SET kernel_schema_version=999").format(
+                    Identifier(schema)
+                )
+            )
+        else:
+            conn.execute(SQL("DELETE FROM {}.kernel_meta").format(Identifier(schema)))
+    before = (
+        registered.get(a.id),
+        registered.history(a.id),
+        registered.lease(a.id),
+        registered.links_from(a.id),
+    )
+    calls: dict[str, Callable[[], Any]] = {
+        "workflow": lambda: registered.register_workflow(workflow),
+        "create": lambda: registered.create_work_item(workflow="review", type="task", actor_id="w"),
+        "claim": lambda: registered.claim(a.id, actor_id="w"),
+        "heartbeat": lambda: registered.heartbeat(a.id, actor_id="w", attempt=1),
+        "release": lambda: registered.release(a.id, actor_id="w", attempt=1),
+        "sweep": registered.expire_leases,
+        "transition": lambda: registered.transition(
+            a.id, transition="start", actor_id="w", attempt=1
+        ),
+        "link": lambda: registered.link(b.id, a.id, "blocks"),
+        "remove_link": lambda: registered.remove_link(a.id, b.id, "blocks"),
+    }
+    with pytest.raises(UnsupportedSchemaError):
+        calls[operation]()
+    assert (
+        registered.get(a.id),
+        registered.history(a.id),
+        registered.lease(a.id),
+        registered.links_from(a.id),
+    ) == before
+    assert registered.health()["work_items"] == 2
+
+
+@pytest.mark.parametrize("destination", ["missing", "empty"])
+def test_open_existing_refuses_without_writes(
+    dsn: str, schema: str, destination: str,
+) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if destination == "missing":
+            conn.execute(SQL("DROP SCHEMA {}").format(Identifier(schema)))
+        before = conn.execute(
+            "SELECT n.oid, c.oid FROM pg_namespace n LEFT JOIN pg_class c "
+            "ON c.relnamespace=n.oid WHERE n.nspname=%s ORDER BY c.oid", (schema,),
+        ).fetchall()
+    with pytest.raises(UnsupportedSchemaError):
+        opened = Kernel.connect(dsn, schema=schema, require_existing=True)
+        opened.close()
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT n.oid, c.oid FROM pg_namespace n LEFT JOIN pg_class c "
+            "ON c.relnamespace=n.oid WHERE n.nspname=%s ORDER BY c.oid", (schema,),
+        ).fetchall() == before
+
+
+def test_open_existing_supported_schema(registered: Kernel, dsn: str, schema: str) -> None:
+    item = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    opened = Kernel.connect(dsn, schema=schema, require_existing=True)
+    try:
+        assert opened.get(item.id) == item
+        assert opened.history(item.id) == registered.history(item.id)
+        assert opened.health() == registered.health()
+    finally:
+        opened.close()

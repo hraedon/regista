@@ -1,1 +1,0 @@
-ALTER TABLE work_items_current ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 0;

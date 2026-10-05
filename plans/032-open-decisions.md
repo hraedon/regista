@@ -208,7 +208,7 @@ authenticity evidence"), and it is the thread that pulls key management back in.
 
 ### D6. Should "blocked" be a link-aware query?
 
-**Evidence.** `prototypes/kernel/F0a-report.md` §4. Typed links are stored, but
+**Evidence.** `plans/032-f0-inventory/F0a-report.md` §4. Typed links are stored, but
 the discovery surface cannot ask "is anything blocking this item still
 unfinished." Both scenarios report blocked work by naming a state, which Plan 032
 permits — "'blocked' and 'review-ready' are queries over a caller's workflow."

@@ -1,7 +1,0 @@
-{
-  "baseline_count": 0,
- "bootstrap_note": "One-time ratified bootstrap: 881 entries (874 default tier + 7 slow tier); the manifest file sha256 is pinned in scripts/check-epoch-debt.py and the node set may only shrink afterwards (SUITE-RECONCILIATION.md §2.1).",
- "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 — docs/0.6.0/SUITE-RECONCILIATION.md §5",
-  "blocker": "none — WI-008 v6 action-delegation counterparts landed",
-  "entries": []
-}
