@@ -190,5 +190,10 @@ Exact commands/output are in [C4 gates](032-c4-final-gates.json),
 The supply-chain guard rejects every probe_rsc1 attack; pristine artifacts pass
 the authoritative guard in a clean full-depth clone, empty HOME and isolated Git
 environment. Later evidence-only commits change no distribution input. F5 records
-the live GitHub controls and mandatory owner hash comparison. Final pushed-commit
-CI remains required; its URL and all job verdicts are recorded after the push.
+the live GitHub controls and mandatory owner hash comparison. Source/evidence commit `4548ac26aae6ef42306a28a87889a7a6acb0476a` passed
+[CI run 37381874233](https://github.com/hraedon/regista/actions/runs/37381874233)
+on all eight jobs. [Exact CI evidence](032-c4-ci.json) includes six suites with
+1,024 tests and 67 subtests, missing-DSN refusals and installed-wheel smoke.
+Its independent [pushed-head rebuild](032-c4-final-head-artifacts.json) also
+reproduced both qualified hashes byte-for-byte. The final documentation-only
+follow-up's CI is checked separately at handoff; F5 records the release sequence.

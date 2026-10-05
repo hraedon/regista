@@ -85,11 +85,29 @@ A changed compression implementation must be requalified; the guard fails closed
 The matrix covers Python 3.11–3.14 on Debian PostgreSQL 15, plus Python 3.14 on
 PostgreSQL 16 and 17. C3's final CI run at `e4fab00367ef3a36e4310b9f0ba318befb12254a`
 was [37372407234](https://github.com/hraedon/regista/actions/runs/37372407234),
-**success on all eight jobs**. C4's final pushed evidence commit also requires a
-green run; its URL and individual job verdicts will be recorded after the push.
+**success on all eight jobs**. C4 source/evidence commit
+`4548ac26aae6ef42306a28a87889a7a6acb0476a` passed
+[CI run 37381874233](https://github.com/hraedon/regista/actions/runs/37381874233)
+on **all eight jobs**. Its fresh full-depth independent clone also rebuilt both
+qualified archives byte-identically and passed the authoritative guard.
+[Exact CI job/step results and gate output](032-c4-ci.json) and
+[pushed-head artifact evidence](032-c4-final-head-artifacts.json) are retained.
+This document's later evidence-only update changes no packaged input; the latest
+PR head's CI is checked again and reported at handoff before declaring C4 complete.
+
+| C4 CI job | Verdict |
+| --- | --- |
+| Schema baseline and reviewed artifacts are immutable | **success** |
+| Kernel (Python 3.11, PostgreSQL 15) | **success** |
+| Kernel (Python 3.12, PostgreSQL 15) | **success** |
+| Kernel (Python 3.14, PostgreSQL 16) | **success** |
+| Kernel (Python 3.14, PostgreSQL 17) | **success** |
+| Lockfile is current | **success** |
+| Kernel (Python 3.14, PostgreSQL 15) | **success** |
+| Kernel (Python 3.13, PostgreSQL 15) | **success** |
 All actions use full official-tag SHAs. Every setup-uv step pins version 0.12.23
-and its official x86_64 binary checksum. The action has no `architecture` input;
-that invalid input is removed. The checksum fails closed for a different binary.
+and its official x86_64 Linux release-asset checksum. The action has no `architecture` input;
+that invalid input is removed. The checksum fails closed for a different release asset.
 
 ## Live GitHub protections — read-only C4 evidence
 
