@@ -18,6 +18,15 @@ sys.path.insert(0, str(KERNEL_ROOT))
 from kernel import Kernel, Workflow  # noqa: E402
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    required = bool(os.environ.get("CI")) or os.environ.get("REGISTA_REQUIRE_DB") == "1"
+    if required and not os.environ.get("REGISTA_TEST_DSN"):
+        raise pytest.UsageError(
+            "REGISTA_TEST_DSN is required in CI or when REGISTA_REQUIRE_DB=1; "
+            "kernel protection requires disposable PostgreSQL"
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def dsn() -> str:
     value = os.environ.get("REGISTA_TEST_DSN")

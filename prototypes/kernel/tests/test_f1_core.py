@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any
 
@@ -15,6 +16,7 @@ from kernel import (
     InvalidWorkflowError,
     Kernel,
     LeaseExpiredError,
+    LeaseNotHeldError,
     ReservedPayloadKeyError,
     StaleAttemptError,
     TransitionRefusedError,
@@ -176,14 +178,18 @@ def test_heartbeat_refusals(registered: Kernel, dsn: str, schema: str, case: str
     if case == "takeover":
         registered.claim(item.id, actor_id="next")
     before = registered.lease(item.id)
-    error = LeaseExpiredError if case == "expired" else StaleAttemptError
-    with pytest.raises(error):
+    error = {
+        "actor": LeaseNotHeldError, "expired": LeaseExpiredError,
+        "attempt": StaleAttemptError, "takeover": StaleAttemptError,
+    }[case]
+    with pytest.raises(error) as refusal:
         registered.heartbeat(
             item.id,
             actor_id="other" if case == "actor" else "w",
             attempt=held.attempt + (case == "attempt"),
             ttl_seconds=120,
         )
+    assert type(refusal.value) is error
     assert registered.lease(item.id) == before
 
 
@@ -202,8 +208,12 @@ def test_transition_fencing(registered: Kernel, dsn: str, schema: str, case: str
     if case == "takeover":
         assert registered.claim(item.id, actor_id="next").attempt > held.attempt
     before = registered.get(item.id), registered.history(item.id), registered.lease(item.id)
-    error = LeaseExpiredError if case == "expired" else StaleAttemptError
-    with pytest.raises(error):
+    error = {
+        "actor": LeaseNotHeldError, "released": LeaseNotHeldError, "swept": LeaseNotHeldError,
+        "expired": LeaseExpiredError, "missing": StaleAttemptError,
+        "wrong": StaleAttemptError, "takeover": StaleAttemptError,
+    }[case]
+    with pytest.raises(error) as refusal:
         registered.transition(
             item.id,
             transition="start",
@@ -211,6 +221,7 @@ def test_transition_fencing(registered: Kernel, dsn: str, schema: str, case: str
             attempt=None if case == "missing" else held.attempt + (case == "wrong"),
             fields={"result": "stale"},
         )
+    assert type(refusal.value) is error
     assert (
         registered.get(item.id),
         registered.history(item.id),
@@ -251,7 +262,8 @@ def test_sweep_scoped_and_live_safe(registered: Kernel, dsn: str, schema: str) -
 
 
 @pytest.mark.parametrize(
-    "change", ["actor", "transition", "fields", "payload", "unset", "item", "actor_kind", "role"]
+    "change", ["actor", "transition", "fields", "payload", "unset", "item", "actor_kind", "role",
+               "expected_seq"]
 )
 def test_idempotency_conflict(registered: Kernel, change: str) -> None:
     item = create(registered)
@@ -261,6 +273,7 @@ def test_idempotency_conflict(registered: Kernel, change: str) -> None:
         "fields": {"x": 1},
         "payload": {"note": "a"},
         "idempotency_key": "operation",
+        "expected_seq": 0,
     }
     original = registered.transition(item.id, **request)
     if change == "item":
@@ -275,6 +288,7 @@ def test_idempotency_conflict(registered: Kernel, change: str) -> None:
             "unset": ("unset_fields", ("obsolete",)),
             "actor_kind": ("actor_kind", "human"),
             "role": ("role", "reviewer"),
+            "expected_seq": ("expected_seq", 99),
         }[change]
         request[key] = value
     before = registered.get(target), registered.history(target)
@@ -389,6 +403,155 @@ def test_expected_sequence(registered: Kernel, expected: int) -> None:
         with pytest.raises(SequenceConflictError):
             registered.transition(item.id, transition="start", actor_id="w", expected_seq=expected)
         assert (registered.get(item.id), registered.history(item.id)) == before
+
+
+def test_expected_sequence_stale_lower(registered: Kernel) -> None:
+    from kernel import SequenceConflictError
+
+    item = create(registered)
+    registered.transition(item.id, transition="start", actor_id="w")
+    for _ in range(4):
+        registered.transition(item.id, transition="edit", actor_id="w")
+    before = registered.get(item.id), registered.history(item.id)
+    assert before[0].last_event_seq == 5
+    with pytest.raises(SequenceConflictError, match="expected sequence 3, current is 5"):
+        registered.transition(item.id, transition="edit", actor_id="reviewer", expected_seq=3)
+    assert (registered.get(item.id), registered.history(item.id)) == before
+
+
+@pytest.mark.parametrize("case", ["missing", "actor", "expired", "released", "takeover"])
+def test_fencing_precedes_sequence(
+    registered: Kernel, dsn: str, schema: str, case: str,
+) -> None:
+    item = create(registered)
+    held = registered.claim(item.id, actor_id="w")
+    if case in ("expired", "takeover"):
+        expire(dsn, schema, item)
+    if case == "takeover":
+        registered.claim(item.id, actor_id="next")
+    if case == "released":
+        registered.release(item.id, actor_id="w", attempt=held.attempt)
+    error = {
+        "missing": StaleAttemptError, "actor": LeaseNotHeldError,
+        "expired": LeaseExpiredError, "released": LeaseNotHeldError,
+        "takeover": StaleAttemptError,
+    }[case]
+    before = registered.get(item.id), registered.history(item.id), registered.lease(item.id)
+    with pytest.raises(error) as refusal:
+        registered.transition(
+            item.id, transition="start", actor_id="other" if case == "actor" else "w",
+            attempt=None if case == "missing" else held.attempt, expected_seq=99,
+        )
+    assert type(refusal.value) is error
+    assert (
+        registered.get(item.id), registered.history(item.id), registered.lease(item.id)
+    ) == before
+
+
+def test_retry_precedes_fencing_and_sequence(registered: Kernel) -> None:
+    item = create(registered)
+    held = registered.claim(item.id, actor_id="w")
+    request: dict[str, Any] = dict(
+        transition="start", actor_id="w", attempt=held.attempt,
+        expected_seq=0, idempotency_key="reviewed-retry",
+    )
+    original = registered.transition(item.id, **request)
+    registered.release(item.id, actor_id="w", attempt=held.attempt)
+    registered.transition(item.id, transition="edit", actor_id="other")
+    before = registered.get(item.id), registered.history(item.id), registered.lease(item.id)
+    assert registered.transition(item.id, **request) == original
+    assert (
+        registered.get(item.id), registered.history(item.id), registered.lease(item.id)
+    ) == before
+
+
+def wait_for_item_lock(
+    admin: psycopg.Connection[Any], application: str, futures: list[Future[Any]], count: int,
+) -> bool:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        admin.execute("SELECT pg_stat_clear_snapshot()")
+        row = admin.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name=%s "
+            "AND wait_event_type='Lock' AND query LIKE 'SELECT %%FROM work_items_current%%'",
+            (application,),
+        ).fetchone()
+        if row and row[0] == count:
+            return True
+        if any(f.done() for f in futures):
+            return False
+        time.sleep(0.01)
+    return False
+
+
+def test_idempotency_recheck_under_item_lock(registered: Kernel, dsn: str, schema: str) -> None:
+    item = create(registered)
+    application = "f1_retry_" + uuid.uuid4().hex
+    params: dict[str, Any] = psycopg.conninfo.conninfo_to_dict(dsn)
+    racing = Kernel.connect(
+        psycopg.conninfo.make_conninfo(**{**params, "application_name": application}),
+        schema=schema, pool_min_size=2, pool_max_size=2,
+    )
+    try:
+        with psycopg.connect(dsn) as admin, ThreadPoolExecutor(max_workers=2) as pool:
+            admin.execute(
+                SQL("SELECT * FROM {}.work_items_current WHERE work_item_id=%s FOR UPDATE")
+                .format(Identifier(schema)), (item.id,),
+            )
+            futures = [pool.submit(
+                racing.transition, item.id, transition="start", actor_id="w",
+                idempotency_key="in-lock-retry",
+            ) for _ in range(2)]
+            try:
+                reached = wait_for_item_lock(admin, application, futures, 2)
+            finally:
+                admin.commit()
+            assert reached, "both retries must finish the fast lookup before the item lock opens"
+            results = [future.result(timeout=10) for future in futures]
+        assert results[0] == results[1]
+        assert registered.get(item.id) == results[0]
+        assert len(registered.history(item.id)) == 2
+    finally:
+        racing.close()
+
+
+def test_heartbeat_serializes_before_expiry_check(
+    registered: Kernel, dsn: str, schema: str,
+) -> None:
+    item = create(registered)
+    held = registered.claim(item.id, actor_id="w", ttl_seconds=120)
+    application = "f1_heartbeat_" + uuid.uuid4().hex
+    params: dict[str, Any] = psycopg.conninfo.conninfo_to_dict(dsn)
+    racing = Kernel.connect(
+        psycopg.conninfo.make_conninfo(**{**params, "application_name": application}),
+        schema=schema,
+    )
+    try:
+        with psycopg.connect(dsn) as admin, ThreadPoolExecutor(max_workers=1) as pool:
+            admin.execute(
+                SQL("SELECT * FROM {}.work_items_current WHERE work_item_id=%s FOR UPDATE")
+                .format(Identifier(schema)), (item.id,),
+            )
+            future = pool.submit(
+                racing.heartbeat, item.id, actor_id="w", attempt=held.attempt, ttl_seconds=300,
+            )
+            try:
+                reached = wait_for_item_lock(admin, application, [future], 1)
+                admin.execute(
+                    SQL("UPDATE {}.claims SET expires_at=clock_timestamp()-interval '1 second' "
+                        "WHERE work_item_id=%s").format(Identifier(schema)), (item.id,),
+                )
+            finally:
+                admin.commit()
+            assert reached, "heartbeat must wait on the canonical item lock while its lease is live"
+            with pytest.raises(LeaseExpiredError) as refusal:
+                future.result(timeout=10)
+            assert type(refusal.value) is LeaseExpiredError
+        lease = registered.lease(item.id)
+        assert lease and not lease.live and lease.attempt == held.attempt
+        assert registered.get(item.id) == item and len(registered.history(item.id)) == 1
+    finally:
+        racing.close()
 
 
 def test_sustained_pool_operations(registered: Kernel, caplog: pytest.LogCaptureFixture) -> None:

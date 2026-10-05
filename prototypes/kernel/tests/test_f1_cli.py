@@ -257,6 +257,40 @@ def test_cli_drift_nonzero(registered: Kernel, dsn: str, schema: str) -> None:
             assert "projection says" in result.stdout
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+def test_cli_chain_break_nonzero(registered: Kernel, dsn: str, schema: str, as_json: bool) -> None:
+    item = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    registered.transition(item.id, transition="start", actor_id="w")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(
+            SQL("UPDATE {}.events SET prev_event_hash='\\x01' "
+                "WHERE work_item_id=%s AND event_seq=1").format(Identifier(schema)), (item.id,),
+        )
+    result = cli(dsn, schema, ["replay", str(item.id)], as_json)
+    assert result.returncode == 1 and result.stderr == ""
+    message = "event 1: chain link does not match predecessor"
+    if as_json:
+        assert json.loads(result.stdout)["drift"] == [message]
+    else:
+        assert message in result.stdout
+    assert registered.get(item.id).state == "doing"
+
+
+@pytest.mark.parametrize("extension", ["json", "yaml"])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_cli_invalid_utf8_workflow(
+    dsn: str, schema: str, tmp_path: Path, extension: str, as_json: bool,
+) -> None:
+    path = tmp_path / f"bad.{extension}"
+    path.write_bytes(b"\xff")
+    result = cli(dsn, schema, ["workflow", "validate", "--file", str(path)], as_json)
+    assert result.returncode == 1 and result.stderr == ""
+    assert "UnicodeDecodeError" in result.stdout
+    if as_json:
+        body = json.loads(result.stdout)
+        assert body["valid"] is False and len(body["problems"]) == 1
+
+
 def test_cli_listing_modes_and_pages(registered: Kernel, dsn: str, schema: str) -> None:
     items = [
         registered.create_work_item(workflow="review", type="task", actor_id="w", fields={"n": i})

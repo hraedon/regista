@@ -296,43 +296,59 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+def _lifecycle_operation(method: Callable[P, R]) -> Callable[P, R]:
+    """Declare a public method that manages the pool without persistent writes."""
+    setattr(method, "_kernel_access", "lifecycle")
+    return method
+
+
 def _pooled_operation(
-    method: Callable[Concatenate[Kernel, P], R],
-) -> Callable[Concatenate[Kernel, P], R]:
-    """Give one public operation one exclusive, schema-scoped connection.
+    *, access: Literal["read", "write", "initialize"],
+) -> Callable[[Callable[Concatenate[Kernel, P], R]], Callable[Concatenate[Kernel, P], R]]:
+    """Declare access at each operation; all ordinary writers share the schema gate.
 
-    Cleanup catches BaseException deliberately: KeyboardInterrupt and cancellation-like
-    exceptions must roll back just as ordinary exceptions do. The wrapped method keeps
-    owning commit versus rollback; this boundary guarantees that anything it forgot to
-    end is rolled back before the connection can be reused.
+    initialize owns the fresh-destination admission check because an empty schema
+    has no version marker yet. Every public method must declare its access; the
+    protection suite checks declarations and follows SQL writes through helpers.
     """
-    @functools.wraps(method)
-    def wrapped(self: Kernel, *args: P.args, **kwargs: P.kwargs) -> R:
-        try:
-            conn = self._acquire_connection()
-            try:
-                self._begin_operation(conn)
-                self._operation_local.conn = conn
-                if method.__name__ in {
-                    "register_workflow", "create_work_item", "claim", "heartbeat",
-                    "release", "expire_leases", "transition", "link", "remove_link",
-                }:
-                    self._require_writable_schema(conn)
-                return method(self, *args, **kwargs)
-            finally:
-                if getattr(self._operation_local, "conn", None) is conn:
-                    del self._operation_local.conn
-                self._clean_connection(conn)
-                self._pool.putconn(conn)
-        except KernelError:
-            raise
-        except psycopg.Error as exc:
-            raise DatabaseOperationError(
-                f"database operation {method.__name__} failed "
-                f"({type(exc).__name__})"
-            ) from exc
+    def decorate(
+        method: Callable[Concatenate[Kernel, P], R],
+    ) -> Callable[Concatenate[Kernel, P], R]:
+        """Give one public operation one exclusive, schema-scoped connection.
 
-    return cast("Callable[Concatenate[Kernel, P], R]", wrapped)
+        Cleanup catches BaseException deliberately: KeyboardInterrupt and cancellation-like
+        exceptions must roll back just as ordinary exceptions do. The wrapped method keeps
+        owning commit versus rollback; this boundary guarantees that anything it forgot to
+        end is rolled back before the connection can be reused.
+        """
+        @functools.wraps(method)
+        def wrapped(self: Kernel, *args: P.args, **kwargs: P.kwargs) -> R:
+            try:
+                conn = self._acquire_connection()
+                try:
+                    self._begin_operation(conn)
+                    self._operation_local.conn = conn
+                    if access == "write":
+                        self._require_writable_schema(conn)
+                    return method(self, *args, **kwargs)
+                finally:
+                    if getattr(self._operation_local, "conn", None) is conn:
+                        del self._operation_local.conn
+                    self._clean_connection(conn)
+                    self._pool.putconn(conn)
+            except KernelError:
+                raise
+            except psycopg.Error as exc:
+                raise DatabaseOperationError(
+                    f"database operation {method.__name__} failed "
+                    f"({type(exc).__name__})"
+                ) from exc
+
+        setattr(wrapped, "_kernel_access", access)
+        setattr(wrapped, "_kernel_schema_gated", access == "write")
+        return cast("Callable[Concatenate[Kernel, P], R]", wrapped)
+
+    return decorate
 
 
 def _close_pool_quietly(pool: ConnectionPool[DictConn]) -> None:
@@ -1015,7 +1031,7 @@ def load_workflow_document(path: str) -> Any:
             if ext == ".json":
                 return json.load(fh)
             return yaml.load(fh, Loader=_NoDuplicateKeyLoader)
-    except (yaml.YAMLError, json.JSONDecodeError, OSError) as exc:
+    except (yaml.YAMLError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise InvalidWorkflowError(f"{path}: cannot load workflow ({type(exc).__name__})") from exc
 
 
@@ -1104,6 +1120,7 @@ class Kernel:
     # ---- lifecycle -------------------------------------------------------
 
     @classmethod
+    @_lifecycle_operation
     def connect(
         cls,
         dsn: str,
@@ -1210,11 +1227,12 @@ class Kernel:
                 raise
         return handle
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def _check_existing_schema(self) -> None:
         self._require_writable_schema(self._conn)
         self._end_read()
 
+    @_lifecycle_operation
     def close(self) -> None:
         self._finalizer.detach()
         self._pool.close()
@@ -1317,7 +1335,7 @@ class Kernel:
             (f"regista-kernel:{self._schema}:{namespace}:{value}",),
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="initialize")
     def initialize(self, schema_sql_path: str) -> None:
         """Create the kernel schema in an empty destination.
 
@@ -1374,7 +1392,7 @@ class Kernel:
 
     # ---- workflows -------------------------------------------------------
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def register_workflow(self, wf: Workflow) -> int:
         """Register an immutable workflow version; returns the version assigned.
 
@@ -1463,7 +1481,7 @@ class Kernel:
             )
         return Workflow.from_json(row["definition"], int(row["version"]))
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def get_workflow(self, name: str, version: int | None = None) -> Workflow:
         with self._conn.cursor() as cur:
             try:
@@ -1472,7 +1490,7 @@ class Kernel:
                 self._end_read()
         return wf
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def list_workflows(
         self, *, limit: int = DEFAULT_PAGE_LIMIT,
         after: tuple[str, int] | None = None,
@@ -1496,7 +1514,7 @@ class Kernel:
         self._end_read()
         return [(r["workflow_name"], int(r["version"]), r["registered_at"]) for r in rows]
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def health(self) -> dict[str, Any]:
         """Schema version, bounded counts, and an instantaneous pool snapshot."""
         with self._conn.cursor() as cur:
@@ -1543,7 +1561,7 @@ class Kernel:
 
     # ---- work items ------------------------------------------------------
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def create_work_item(
         self,
         *,
@@ -1593,7 +1611,7 @@ class Kernel:
         self._conn.commit()
         return WorkItem(item_id, wf.name, wf.version, type, wf.initial, fields, 0)
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def get(self, work_item_id: uuid.UUID) -> WorkItem:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -1643,7 +1661,7 @@ class Kernel:
 
     # ---- claims ----------------------------------------------------------
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def claim(
         self, work_item_id: uuid.UUID, *, actor_id: str, ttl_seconds: float = 300
     ) -> Claim:
@@ -1704,7 +1722,7 @@ class Kernel:
         self._conn.commit()
         return Claim(work_item_id, actor_id, attempt, expires)
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def heartbeat(
         self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int,
         ttl_seconds: float = 300,
@@ -1804,7 +1822,7 @@ class Kernel:
             "caller-supplied attribution either way.)"
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def release(self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int) -> None:
         """Release a lease. Takes the primitive rather than a Claim, so a CLI
         holding only (id, actor, attempt) can call it without fabricating one.
@@ -1821,7 +1839,7 @@ class Kernel:
             )
         self._conn.commit()
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def lease(self, work_item_id: uuid.UUID) -> Claim | None:
         """Who holds this item's lease, if anyone. A SNAPSHOT, not a guarantee.
 
@@ -1856,7 +1874,7 @@ class Kernel:
         return Claim(work_item_id, row["actor_id"], int(row["attempt_number"]),
                      row["expires_at"], bool(row["live"]))
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def expire_leases(self, work_item_id: uuid.UUID | None = None) -> int:
         """Sweep expired leases -- every one, or just this item's.
 
@@ -1944,7 +1962,7 @@ class Kernel:
             state, fields, target_seq,
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def transition(
         self,
         work_item_id: uuid.UUID,
@@ -1982,8 +2000,17 @@ class Kernel:
         a required field.
 
         `expected_seq` optionally requires the locked item's last_event_seq to
-        match before any effects. This protects content reviewed without a lease.
-        A matching idempotent retry still returns its original result.
+        match after lease fencing and before effects. This protects content
+        reviewed without a lease. A matching idempotent retry returns its original
+        result before fencing and sequence validation.
+
+        The 0.8.0 baseline request hash is SHA-256 over canonical JSON containing
+        w (item UUID), t (transition), a (actor_id), f (fields), u (ordered clears),
+        p (payload), actor_kind, role and expected_seq, including null defaults.
+        The fencing attempt and idempotency key are excluded: the attempt may be
+        stale on a retry, and the key indexes the request rather than defining it.
+        No store written by a released build exists; the 0.8.0 baseline defines
+        the hash. KERNEL_SCHEMA_VERSION remains 1.
 
         `payload` is free-form annotation recorded on the event. It obeys the
         FIELD TYPES contract and may not contain a reserved key.
@@ -2051,12 +2078,6 @@ class Kernel:
                     self._conn.rollback()
                     return prior
 
-            if expected_seq is not None and expected_seq != int(item["last_event_seq"]):
-                raise SequenceConflictError(
-                    f"expected sequence {expected_seq}, current is {item['last_event_seq']}"
-                )
-            wf = self._read_workflow(cur, item["workflow_name"], item["workflow_version"])
-
             # Lease fencing, before any validation that could leak state.
             # clock_timestamp(), not now(): the row lock above may have blocked
             # for longer than the lease had left, and the write serializes HERE,
@@ -2094,6 +2115,12 @@ class Kernel:
                     self._conn.rollback()
                     raise self._lease_refusal(work_item_id, lease, actor_id, attempt,
                                               verb="transition")
+
+            if expected_seq is not None and expected_seq != int(item["last_event_seq"]):
+                raise SequenceConflictError(
+                    f"expected sequence {expected_seq}, current is {item['last_event_seq']}"
+                )
+            wf = self._read_workflow(cur, item["workflow_name"], item["workflow_version"])
 
             state = item["current_state"]
             if state in wf.terminal:
@@ -2226,7 +2253,7 @@ class Kernel:
 
     # ---- links -----------------------------------------------------------
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
         if source == target:
             raise InvalidFieldError("a work item cannot link to itself")
@@ -2249,7 +2276,7 @@ class Kernel:
             )
         self._conn.commit()
 
-    @_pooled_operation
+    @_pooled_operation(access="write")
     def remove_link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
         """Remove an explicit relationship; refuse an absent one. Outside replay."""
         with self._conn.cursor() as cur:
@@ -2259,7 +2286,7 @@ class Kernel:
                 raise InvalidFieldError("no such typed link")
         self._conn.commit()
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def links_from(
         self, source: uuid.UUID, *, link_type: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT, after: tuple[str, uuid.UUID] | None = None,
@@ -2290,7 +2317,7 @@ class Kernel:
 
     # ---- discovery queries ----------------------------------------------
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def list_items(
         self, *, workflow: str | None = None, type: str | None = None,
         states: tuple[str, ...] = (), where_fields: dict[str, Any] | None = None,
@@ -2313,7 +2340,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def available(
         self, *, workflow: str | None = None, type: str | None = None,
         states: tuple[str, ...] = (), where_fields: dict[str, Any] | None = None,
@@ -2336,7 +2363,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def owned(
         self, actor_id: str, *, workflow: str | None = None, type: str | None = None,
         states: tuple[str, ...] = (), where_fields: dict[str, Any] | None = None,
@@ -2352,7 +2379,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def in_states(
         self, states: tuple[str, ...], *, workflow: str | None = None,
         type: str | None = None, where_fields: dict[str, Any] | None = None,
@@ -2374,7 +2401,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def blocked(
         self, *, link_type: str, direction: Literal["incoming", "outgoing"],
         satisfied_states: tuple[str, ...],
@@ -2549,7 +2576,7 @@ class Kernel:
 
     # ---- history and replay ---------------------------------------------
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def history(
         self, work_item_id: uuid.UUID, *, limit: int = DEFAULT_PAGE_LIMIT,
         after: int | None = None,
@@ -2580,7 +2607,7 @@ class Kernel:
             for r in rows
         ]
 
-    @_pooled_operation
+    @_pooled_operation(access="read")
     def replay(self, work_item_id: uuid.UUID) -> tuple[str, dict[str, Any], list[str]]:
         """Rebuild state from events alone and reconcile it with the projection.
 
