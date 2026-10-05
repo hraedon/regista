@@ -1,0 +1,787 @@
+[
+  {
+    "mutant": "lease_fencing",
+    "file": "kernel.py",
+    "selection": "test_transition_fencing",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[missing]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[wrong]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[actor]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[expired]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[swept]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[released]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[takeover]"
+    ]
+  },
+  {
+    "mutant": "heartbeat_owner_attempt_expiry",
+    "file": "kernel.py",
+    "selection": "test_heartbeat_refusals",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_refusals[actor]",
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_refusals[attempt]",
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_refusals[takeover]",
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_refusals[expired]"
+    ]
+  },
+  {
+    "mutant": "claim_contention",
+    "file": "kernel.py",
+    "selection": "test_claim_contested or test_concurrent_claim_one_winner",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_claim_contested[w]",
+      "prototypes.kernel.tests.test_f1_core::test_claim_contested[other]",
+      "prototypes.kernel.tests.test_f1_core::test_concurrent_claim_one_winner"
+    ]
+  },
+  {
+    "mutant": "attempt_reissued",
+    "file": "kernel.py",
+    "selection": "test_attempt_monotonic",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_attempt_monotonic"
+    ]
+  },
+  {
+    "mutant": "release_ignored",
+    "file": "kernel.py",
+    "selection": "test_claim_acquire_release",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_claim_acquire_release"
+    ]
+  },
+  {
+    "mutant": "heartbeat_no_extension",
+    "file": "kernel.py",
+    "selection": "test_heartbeat_extension",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_extension"
+    ]
+  },
+  {
+    "mutant": "sweep_live_leases",
+    "file": "kernel.py",
+    "selection": "test_sweep_scoped_and_live_safe",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_sweep_scoped_and_live_safe"
+    ]
+  },
+  {
+    "mutant": "retry_conflict_accepted",
+    "file": "kernel.py",
+    "selection": "test_idempotency_conflict",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[actor]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[transition]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[fields]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[payload]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[unset]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[item]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[actor_kind]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[role]"
+    ]
+  },
+  {
+    "mutant": "retry_returns_latest",
+    "file": "kernel.py",
+    "selection": "test_idempotency_original_result",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_original_result"
+    ]
+  },
+  {
+    "mutant": "partial_commit",
+    "file": "kernel.py",
+    "selection": "test_event_projection_atomicity",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_event_projection_atomicity[create]",
+      "prototypes.kernel.tests.test_f1_core::test_event_projection_atomicity[transition]"
+    ]
+  },
+  {
+    "mutant": "search_path_injection",
+    "file": "kernel.py",
+    "selection": "test_supplied_schema_cannot_redirect",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_supplied_schema_cannot_redirect"
+    ]
+  },
+  {
+    "mutant": "namespace_shared",
+    "file": "kernel.py",
+    "selection": "test_namespace_isolation",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_namespace_isolation"
+    ]
+  },
+  {
+    "mutant": "type_unchecked",
+    "file": "kernel.py",
+    "selection": "test_create_refusals[type]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_create_refusals[type]"
+    ]
+  },
+  {
+    "mutant": "workflow_ignored",
+    "file": "kernel.py",
+    "selection": "test_create_refusals[workflow]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_create_refusals[workflow]"
+    ]
+  },
+  {
+    "mutant": "role_gate_removed",
+    "file": "kernel.py",
+    "selection": "test_transition_refusals[role]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_refusals[role]"
+    ]
+  },
+  {
+    "mutant": "required_gate_removed",
+    "file": "kernel.py",
+    "selection": "test_transition_refusals[required] or test_transition_refusals[null] or test_clear_refusals[required_clear]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_refusals[required]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_refusals[null]",
+      "prototypes.kernel.tests.test_f1_fields::test_clear_refusals[required_clear]"
+    ]
+  },
+  {
+    "mutant": "terminal_gate_removed",
+    "file": "kernel.py",
+    "selection": "test_transition_refusals[terminal]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_refusals[terminal]"
+    ]
+  },
+  {
+    "mutant": "from_state_gate_removed",
+    "file": "kernel.py",
+    "selection": "test_transition_refusals[wrong_state]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_refusals[wrong_state]"
+    ]
+  },
+  {
+    "mutant": "reserved_payload_allowed",
+    "file": "kernel.py",
+    "selection": "test_reserved_payload_refusal",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_reserved_payload_refusal[from]",
+      "prototypes.kernel.tests.test_f1_core::test_reserved_payload_refusal[to]",
+      "prototypes.kernel.tests.test_f1_core::test_reserved_payload_refusal[fields]",
+      "prototypes.kernel.tests.test_f1_core::test_reserved_payload_refusal[unset]",
+      "prototypes.kernel.tests.test_f1_core::test_reserved_payload_refusal[created]"
+    ]
+  },
+  {
+    "mutant": "field_schema_unenforced",
+    "file": "kernel.py",
+    "selection": "test_declared_field_refusals or test_work_item_refs and (missing or wrong_type or invalid_uuid)",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[required-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[required-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[unknown-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[unknown-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[type-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[type-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[enum-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_declared_field_refusals[enum-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[missing-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[missing-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[wrong_type-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[wrong_type-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[invalid_uuid-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[invalid_uuid-transition]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[untyped_missing-create]",
+      "prototypes.kernel.tests.test_f1_fields::test_work_item_refs[untyped_missing-transition]"
+    ]
+  },
+  {
+    "mutant": "json_types_unchecked",
+    "file": "kernel.py",
+    "selection": "test_json_type_refusal",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[create-nan]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[create-inf]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[create-value2]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[create-value3]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[create-value4]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[transition-nan]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[transition-inf]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[transition-value2]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[transition-value3]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[transition-value4]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[payload-nan]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[payload-inf]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[payload-value2]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[payload-value3]",
+      "prototypes.kernel.tests.test_f1_fields::test_json_type_refusal[payload-value4]"
+    ]
+  },
+  {
+    "mutant": "clear_collision_allowed",
+    "file": "kernel.py",
+    "selection": "test_clear_refusals[same_key]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_fields::test_clear_refusals[same_key]"
+    ]
+  },
+  {
+    "mutant": "clear_not_recorded",
+    "file": "kernel.py",
+    "selection": "test_shallow_merge_and_atomic_clear",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_fields::test_shallow_merge_and_atomic_clear"
+    ]
+  },
+  {
+    "mutant": "expected_sequence_ignored",
+    "file": "kernel.py",
+    "selection": "test_expected_sequence[1] or test_expected_sequence[99]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_expected_sequence[1]",
+      "prototypes.kernel.tests.test_f1_core::test_expected_sequence[99]"
+    ]
+  },
+  {
+    "mutant": "schema_refusal_removed",
+    "file": "kernel.py",
+    "selection": "test_initialize_refuses_without_writes",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_initialize_refuses_without_writes[legacy]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_initialize_refuses_without_writes[unknown]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_initialize_refuses_without_writes[version]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_initialize_refuses_without_writes[empty_meta]"
+    ]
+  },
+  {
+    "mutant": "workflow_semantics_unchecked",
+    "file": "kernel.py",
+    "selection": "test_document_semantic_refusals and (unreachable or unknown_from or unknown_to or undeclared_role or unused_role) or test_field_declaration_refusals",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[unknown_type]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[invalid_schema]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[unknown_ref_type]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[malformed_ref]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[both_ref_forms]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[null_ref_rule]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[schema_reference]",
+      "prototypes.kernel.tests.test_f1_fields::test_field_declaration_refusals[boolean_rule]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unknown_from]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unknown_to]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unreachable]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[undeclared_role]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unused_role]"
+    ]
+  },
+  {
+    "mutant": "workflow_pinning_removed",
+    "file": "kernel.py",
+    "selection": "test_version_pinning",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_version_pinning"
+    ]
+  },
+  {
+    "mutant": "link_self_allowed",
+    "file": "kernel.py",
+    "selection": "test_link_refusals[self]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_link_refusals[self]"
+    ]
+  },
+  {
+    "mutant": "link_type_unchecked",
+    "file": "kernel.py",
+    "selection": "test_link_vocabulary_and_removal",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_link_vocabulary_and_removal"
+    ]
+  },
+  {
+    "mutant": "link_endpoints_unchecked",
+    "file": "kernel.py",
+    "selection": "test_link_refusals[missing_source]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_link_refusals[missing_source]"
+    ]
+  },
+  {
+    "mutant": "query_limits_ignored",
+    "file": "kernel.py",
+    "selection": "test_query_refusals[zero] or test_query_refusals[too_large]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[zero]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[too_large]"
+    ]
+  },
+  {
+    "mutant": "nested_filter_allowed",
+    "file": "kernel.py",
+    "selection": "test_query_refusals[nested_filter] or test_query_refusals[too_many_filters]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[nested_filter]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[too_many_filters]"
+    ]
+  },
+  {
+    "mutant": "bad_direction_allowed",
+    "file": "kernel.py",
+    "selection": "test_query_refusals[direction]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[direction]"
+    ]
+  },
+  {
+    "mutant": "unknown_satisfaction_allowed",
+    "file": "kernel.py",
+    "selection": "test_query_refusals[satisfied]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[satisfied]"
+    ]
+  },
+  {
+    "mutant": "replay_materialized",
+    "file": "kernel.py",
+    "selection": "test_replay_memory_bound",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_replay::test_replay_memory_bound"
+    ]
+  },
+  {
+    "mutant": "snapshot_read_committed",
+    "file": "kernel.py",
+    "selection": "test_replay_repeatable_snapshot",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_replay::test_replay_repeatable_snapshot"
+    ]
+  },
+  {
+    "mutant": "prepared_cache_restored",
+    "file": "kernel.py",
+    "selection": "test_sustained_pool_operations",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_sustained_pool_operations"
+    ]
+  },
+  {
+    "mutant": "cli_failures_exit_zero",
+    "file": "cli.py",
+    "selection": "test_cli_refusal_audit or test_cli_drift_nonzero",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-show]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-workflow_show]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-create]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-claim]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-heartbeat]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-transition]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-link]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-limit]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-cursor]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-blocked]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-unknown_command]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-missing_argument]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-legacy_verb]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-invalid_workflow]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[False-malformed_yaml]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-show]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-workflow_show]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-create]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-claim]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-heartbeat]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-transition]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-link]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-limit]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-cursor]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-blocked]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-unknown_command]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-missing_argument]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-legacy_verb]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-invalid_workflow]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_refusal_audit[True-malformed_yaml]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_drift_nonzero"
+    ]
+  },
+  {
+    "mutant": "document_rules_ignored",
+    "file": "kernel.py",
+    "selection": "test_document_semantic_refusals",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[name]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[states]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[initial]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unknown_from]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unknown_to]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unreachable]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[undeclared_role]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[unused_role]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[duplicate_state]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[duplicate_transition]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_document_semantic_refusals[format_version]"
+    ]
+  },
+  {
+    "mutant": "invalid_files_accepted",
+    "file": "kernel.py",
+    "selection": "test_load_refusals",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_load_refusals[syntax]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_load_refusals[duplicate]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_load_refusals[empty]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_load_refusals[extension]"
+    ]
+  },
+  {
+    "mutant": "workflow_version_assertion_ignored",
+    "file": "kernel.py",
+    "selection": "test_workflow_version_conflict",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_workflow_version_conflict"
+    ]
+  },
+  {
+    "mutant": "workflow_duplicate_version",
+    "file": "kernel.py",
+    "selection": "test_workflow_idempotent",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_workflow_idempotent"
+    ]
+  },
+  {
+    "mutant": "replay_always_clean",
+    "file": "kernel.py",
+    "selection": "test_replay_detects_damage or test_cli_drift_nonzero",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_drift_nonzero",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[state]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[fields]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[payload]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[middle_deleted]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[tail_deleted]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[all_deleted]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[chain]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[sequence]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[orphan_created]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[orphan_noncreated]"
+    ]
+  },
+  {
+    "mutant": "absent_link_removal_silent",
+    "file": "kernel.py",
+    "selection": "test_remove_absent_link",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_remove_absent_link"
+    ]
+  },
+  {
+    "mutant": "missing_target_silent",
+    "file": "kernel.py",
+    "selection": "test_link_refusals[missing_target]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_link_refusals[missing_target]"
+    ]
+  },
+  {
+    "mutant": "dead_cursor_restarts",
+    "file": "kernel.py",
+    "selection": "test_query_refusals[dead_cursor]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[dead_cursor]"
+    ]
+  },
+  {
+    "mutant": "empty_states_allowed",
+    "file": "kernel.py",
+    "selection": "test_query_refusals[empty_states]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_refusals[empty_states]"
+    ]
+  },
+  {
+    "mutant": "unknown_transition_accepted",
+    "file": "kernel.py",
+    "selection": "test_transition_refusals[unknown]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_refusals[unknown]"
+    ]
+  },
+  {
+    "mutant": "workflow_name_ignored",
+    "file": "kernel.py",
+    "selection": "test_supplied_workflow_name_is_data",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_supplied_workflow_name_is_data"
+    ]
+  },
+  {
+    "mutant": "transition_releases_lease",
+    "file": "kernel.py",
+    "selection": "test_lease_is_retained_until_explicit_release",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_lease_is_retained_until_explicit_release"
+    ]
+  },
+  {
+    "mutant": "cli_bad_exits_zero",
+    "file": "cli.py",
+    "selection": "test_cli_unlink or test_cli_unreachable_database",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unreachable_database[False]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unreachable_database[True]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unlink[False]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unlink[True]"
+    ]
+  },
+  {
+    "mutant": "namespace_shared_role",
+    "file": "kernel.py",
+    "selection": "test_database_role_is_scoped",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_database_role_is_scoped"
+    ]
+  },
+  {
+    "mutant": "expected_sequence_always_refused",
+    "file": "kernel.py",
+    "selection": "test_expected_sequence[0]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_expected_sequence[0]"
+    ]
+  },
+  {
+    "mutant": "retry_lookup_removed",
+    "file": "kernel.py",
+    "selection": "test_concurrent_idempotency or test_idempotency_original_result",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_original_result",
+      "prototypes.kernel.tests.test_f1_core::test_concurrent_idempotency[True]",
+      "prototypes.kernel.tests.test_f1_core::test_concurrent_idempotency[False]"
+    ]
+  },
+  {
+    "mutant": "sequence_gaps",
+    "file": "kernel.py",
+    "selection": "test_concurrent_gap_free",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_concurrent_gap_free"
+    ]
+  },
+  {
+    "mutant": "release_fence_removed",
+    "file": "kernel.py",
+    "selection": "test_attempt_monotonic",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_attempt_monotonic"
+    ]
+  },
+  {
+    "mutant": "initializer_missing",
+    "file": "kernel.py",
+    "selection": "test_concurrent_initialize",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_concurrent_initialize"
+    ]
+  },
+  {
+    "mutant": "workflow_lock_missing",
+    "file": "kernel.py",
+    "selection": "test_concurrent_workflow_registration",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_concurrent_workflow_registration"
+    ]
+  },
+  {
+    "mutant": "write_schema_gate_removed",
+    "file": "kernel.py",
+    "selection": "test_unsupported_schema_cannot_write",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[workflow-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[workflow-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[create-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[create-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[claim-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[claim-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[heartbeat-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[heartbeat-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[release-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[release-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[sweep-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[sweep-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[transition-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[transition-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[link-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[link-missing]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[remove_link-unsupported]",
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_unsupported_schema_cannot_write[remove_link-missing]"
+    ]
+  },
+  {
+    "mutant": "missing_dsn_exit_one",
+    "file": "cli.py",
+    "selection": "test_cli_missing_dsn",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-init]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-health]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-show]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-history]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-replay]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-workflow_list]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[False-claim]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-init]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-health]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-show]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-history]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-replay]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-workflow_list]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_missing_dsn[True-claim]"
+    ]
+  },
+  {
+    "mutant": "append_writer_reintroduced",
+    "file": "kernel.py",
+    "selection": "test_transition_is_the_only_public_event_writer",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_transition_is_the_only_public_event_writer"
+    ]
+  },
+  {
+    "mutant": "invalid_ttl_allowed",
+    "file": "kernel.py",
+    "selection": "test_invalid_lease_ttl",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[0.0-claim]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[0.0-heartbeat]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[-1.0-claim]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[-1.0-heartbeat]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[nan-claim]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[nan-heartbeat]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[inf-claim]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[inf-heartbeat]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[-inf-claim]",
+      "prototypes.kernel.tests.test_f1_core::test_invalid_lease_ttl[-inf-heartbeat]"
+    ]
+  },
+  {
+    "mutant": "cli_success_exits_one",
+    "file": "cli.py",
+    "selection": "test_each_command or test_cli_fresh_init or test_cli_new_workflow or test_cli_listing_modes_and_pages or test_cli_unlink",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-init]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-health]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-workflow_validate]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-workflow_register]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-workflow_list]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-workflow_show]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-create]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-show]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-list]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-claim]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-heartbeat]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-lease]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-release]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-transition]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-link]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-history]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-replay]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[False-expire_leases]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-init]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-health]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-workflow_validate]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-workflow_register]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-workflow_list]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-workflow_show]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-create]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-show]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-list]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-claim]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-heartbeat]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-lease]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-release]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-transition]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-link]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-history]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-replay]",
+      "prototypes.kernel.tests.test_f1_cli::test_each_command[True-expire_leases]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_listing_modes_and_pages",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unlink[False]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unlink[True]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_fresh_init",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_new_workflow"
+    ]
+  },
+  {
+    "mutant": "replay_resets_fencing",
+    "file": "kernel.py",
+    "selection": "test_replay_clean_and_boundary",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_replay::test_replay_clean_and_boundary"
+    ]
+  },
+  {
+    "mutant": "duplicate_link_refused",
+    "file": "kernel.py",
+    "selection": "test_links_lookup_and_idempotency",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_links_lookup_and_idempotency"
+    ]
+  },
+  {
+    "mutant": "query_order_reversed",
+    "file": "kernel.py",
+    "selection": "test_query_order_and_paging or test_query_filters_and_liveness or test_d6_single_hop_no_scheduler",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_order_and_paging[all]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_order_and_paging[available]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_order_and_paging[owned]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_order_and_paging[in_states]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_order_and_paging[blocked]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_order_and_paging[review_ready]",
+      "prototypes.kernel.tests.test_f1_queries_links::test_query_filters_and_liveness",
+      "prototypes.kernel.tests.test_f1_queries_links::test_d6_single_hop_no_scheduler"
+    ]
+  },
+  {
+    "mutant": "initializer_missing_catalog",
+    "file": "kernel.py",
+    "selection": "test_catalog_roundtrip",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_catalog_roundtrip"
+    ]
+  },
+  {
+    "mutant": "history_missing",
+    "file": "kernel.py",
+    "selection": "test_create_and_get",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_create_and_get"
+    ]
+  },
+  {
+    "mutant": "replay_ignores_handoff_fields",
+    "file": "kernel.py",
+    "selection": "test_full_repair_handoff",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_full_repair_handoff"
+    ]
+  },
+  {
+    "mutant": "replay_writes",
+    "file": "kernel.py",
+    "selection": "test_replay_read_only_no_temp_residue",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_replay::test_replay_read_only_no_temp_residue"
+    ]
+  },
+  {
+    "mutant": "cli_connect_outside_error_handler",
+    "file": "cli.py",
+    "selection": "test_cli_unreachable_database",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unreachable_database[False]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_unreachable_database[True]"
+    ]
+  }
+]
