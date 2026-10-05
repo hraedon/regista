@@ -1,7 +1,7 @@
 # Plan 032 F5 — 0.8.0 release preparation (no publication)
 
 Prepared 2026-10-05. **Exact candidate commit:
-`8ff80ade3972311c6e6568f3afae415761a9a9ca`**, branch `feat/wi364-f1-promote`,
+`47591367476b6ec036ef439b9f4499e966eac9ff`**, branch `feat/wi364-f1-promote`,
 draft [PR #93](https://github.com/hraedon/regista/pull/93). Later evidence-only
 commits on that branch do not change any packaged input. Do not infer publication
 from the version bump: no tag, upload, workflow dispatch, yank or settings change
@@ -11,8 +11,8 @@ was authorized or performed.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `regista_hraedon-0.8.0-py3-none-any.whl` | `80f5498d901aa8c52349a22e4354e540551e32da9f09768d11190573d0fddd04` |
-| `regista_hraedon-0.8.0.tar.gz` | `1a2b25c8d38b1957bf113e88407279ed3754c5ec7f7913c54ea0e19ec830a8d2` |
+| `regista_hraedon-0.8.0-py3-none-any.whl` | `7d64f71cae2697b17dc2a1ab79b5a2b686770ea4fb7a9bed3de7911c9c4c2ec0` |
+| `regista_hraedon-0.8.0.tar.gz` | `091dfa27b322bdf5c5129a10f2f8327e64dc0a64df66eb42289b1b4d8cf98f1f` |
 
 [F3 qualification](032-f3-qualification.md) records clean wheel/sdist installs,
 installed resources/scenarios, restart, rollback/contention, terminated-worker
@@ -30,12 +30,12 @@ was added (D13).
 
 The wheel contains the explicit facade, kernel, CLI, `py.typed`, both schema
 resources, four example script/YAML resources, entry point, metadata and license
-(16 members including RECORD, including the committed baseline manifest). The sdist contains 69 regular members under its
+(16 members including RECORD, including the committed baseline manifest). The sdist contains 70 regular members under its
 single versioned root: retained source, examples/tests/scripts/hooks, CI,
 publication declaration, README/metadata/license and test-operation files.
 Retired migrations/sidecar implementations are absent. Current Git-only reference
 docs and qualification reports are not distribution inputs. README is the wheel
-long description; `uvx --from twine==7.0.0 twine check dist/*` passes for both artifacts.
+long description; `uvx --from twine==7.0.0 twine check dist/*.whl dist/*.tar.gz` passes for both artifacts.
 
 ## Tag workflow and byte equivalence
 
@@ -52,9 +52,10 @@ It does not rebuild in the publish job. A tag push is a publication action.
 The build job **does rebuild**, rather than consuming a locally reviewed upload.
 A fresh full-depth `git clone --no-local --no-hardlinks` of the artifact-bearing
 tree, followed by the same `uv build`, produced **byte-identical wheel and sdist
-SHA-256 hashes above**. C1 fixes and fresh packaged resources are included in this candidate. Rebuild tooling was uv 0.12.23
+SHA-256 hashes above**. C1 fixes and C2 connection admission are included in this candidate. Rebuild
+tooling was uv 0.12.23
 with the complete pinned Hatch backend closure in `pyproject.toml` (Hatchling
-1.32.4). The [final gate record](032-c1-final-gates.json) records the after-last-edit build
+1.32.4). The [final gate record](032-c2-final-gates.json) records the after-last-edit build
 and digest comparison; publication must still retain the qualified hashes.
 
 The #65 guard additionally validates exact candidate members against committed
@@ -69,8 +70,8 @@ downloaded artifact hashes again before permitting upload if tooling changes.
 off, no system/global git config, a full-depth independent clone and no alternates.
 
 The ordinary CI matrix covers 3.11–3.14. Historical runs 37275016486 and
-37276210043 predate C1 and do not qualify this candidate. The current local
-3.14/3.11 suites and all exact gate results are in the C1 gate record; the owner
+37276210043 predate C2. The current local
+3.14/3.11 suites and all exact gate results are in the C2 gate record; the owner
 must confirm the selected commit's current four-version CI verdict before release.
 All actions use full SHAs resolved from official tags. Every setup-uv step pins
 0.12.23, x86_64 and its official platform checksum; twine is pinned to 7.0.0.
@@ -133,7 +134,7 @@ These are the workflow comments' prerequisites, **not verified from this repo**:
    maintenance dates and the owner's yank disposition. None of these
    post-publication actions was performed during this preparation.
 
-## Owner verification of tag-ruleset principals (C1)
+## Owner verification of tag-ruleset principals (C2)
 
 Before creating a `v*` tag, the owner must inspect the actual tag ruleset and list
 its allowed creation/bypass principals: only the designated release-owner account
@@ -145,7 +146,7 @@ have no implicit bypass; record the precise account/app/team identities and thei
 permissions at release approval. Protect main against direct pushes and require PR
 review and passing CI. The `pypi` environment must require a separate reviewer,
 prevent self-review and administrator bypass, and allow only main and protected
-`v*` tags. No settings inspection or mutation is claimed by C1.
+`v*` tags. No settings inspection or mutation is claimed by C2.
 
 Repository verification fetches origin/main and requires the tag commit to be its
 ancestor, checks tag/package version, and runs the fail-closed identifier scan before

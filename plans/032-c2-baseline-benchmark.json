@@ -119,5 +119,6 @@
     },
     "method": "7 alternating batches; 100 queries or 50 writes; historical per-write guard control"
   },
-  "qualification_note": "Final runtime source after preserving empty-schema UnsupportedSchemaError; prior same-method C2 samples retained."
+  "qualification_note": "Final runtime source after preserving empty-schema UnsupportedSchemaError; prior same-method C2 samples retained.",
+  "candidate": "47591367476b6ec036ef439b9f4499e966eac9ff"
 }
