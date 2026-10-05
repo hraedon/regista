@@ -50,7 +50,12 @@ explicitly prints:
 
 > no published 0.8.x release yet; PyPI binding not applicable
 
-CI runs `verify-ledger`; the publishing workflow's existing `check-release`
+CI kernel jobs now fetch full history as well: the initial B2 CI run correctly
+refused three release-guard tests in its shallow checkout. A failing-first
+checkout-depth assertion pins that integration requirement. No guard assertion
+was relaxed. UV setup also precedes pytest so all three restored real-build
+vectors execute in CI rather than skip for a missing frontend; the same
+failing-first CI assertion pins this order. CI runs `verify-ledger`; the publishing workflow's existing `check-release`
 now performs that PyPI verification itself. No 0.8 release was published here.
 
 `scripts/reproduce_b2_bypass.py --revision 8c6365d --expect pass` reproduced both

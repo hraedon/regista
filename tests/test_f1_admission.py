@@ -46,6 +46,12 @@ def test_database_requirement(tmp_path: Path, mode: str) -> None:
 def test_protection_suite_is_in_postgres_ci() -> None:
     path = Path(__file__).parents[1] / ".github/workflows/ci.yml"
     job = yaml.safe_load(path.read_text())["jobs"]["kernel"]
+    checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+    assert checkout.get("with", {}).get("fetch-depth") == 0
+    build_tools = next(i for i, s in enumerate(job["steps"])
+                       if s.get("uses", "").startswith("astral-sh/setup-uv@"))
+    suite = next(i for i, s in enumerate(job["steps"]) if "pytest tests/" in s.get("run", ""))
+    assert build_tools < suite  # real-build guard vectors must execute, not skip for missing uv
     assert job["services"]["postgres"]["image"] == "postgres:15"
     assert job["strategy"]["matrix"]["python-version"] == ["3.11", "3.12", "3.13", "3.14"]
     step = next(s for s in job["steps"] if "pytest tests/" in s.get("run", ""))
