@@ -152,6 +152,7 @@ def cmd_show(k: Kernel, args: argparse.Namespace) -> int:
             "links": [{"target": str(t), "type": lt} for t, lt in links]}
     if not args.json:
         print(f"  id      {item.id}")
+        print(f"  workflow {item.workflow_name} v{item.workflow_version}")
         print(f"  state   {item.state}")
         print(f"  type    {item.type}")
         print(f"  lease   {_lease_line(held)}")
@@ -221,7 +222,8 @@ def cmd_list(k: Kernel, args: argparse.Namespace) -> int:
                 f"  [leased by {held.actor_id}]" if held.live
                 else f"  [lease EXPIRED, held by {held.actor_id}]"
             )
-            print(f"  {i.id}  {i.state:<18} {i.type}{mark}")
+            print(f"  {i.id}  {i.state:<18} {i.type}  "
+                  f"{i.workflow_name} v{i.workflow_version}{mark}")
         if not items:
             print("  (none)")
         _more(len(items), args.limit, f"resume with --after {items[-1].id}" if items else "")

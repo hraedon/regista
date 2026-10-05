@@ -134,8 +134,10 @@ def test_each_command(
         body = json.loads(result.stdout)  # also proves no logging on stdout
         if command == "health":
             assert body["work_items"] == 2 and body["events"] == 2
+            assert body["schema_version"] == 1
         elif command == "show":
             assert body["id"] == str(item.id) and body["state"] == "new"
+            assert body["workflow"] == "review v1"
         elif command == "replay":
             assert body == {"state": "new", "fields": {"discard": 1}, "drift": []}
         elif command == "init":
@@ -163,6 +165,8 @@ def test_each_command(
         assert result.stdout.strip()
         if command in ("workflow_validate", "workflow_register", "workflow_list", "workflow_show"):
             assert "review" in result.stdout
+        if command in ("show", "list"):
+            assert "review v1" in result.stdout
         if command == "history":
             assert "created" in result.stdout and "w (agent)" in result.stdout
         if command == "list":

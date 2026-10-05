@@ -83,6 +83,47 @@ def materialize(source: str) -> str:
 # Each selector names assertions the corresponding defect MUST kill.
 MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
     (
+        "cli_show_workflow_hidden", "cli.py",
+        replace_once('        print(f"  workflow {item.workflow_name} v{item.workflow_version}")',
+                     "        pass"),
+        "test_each_command[False-show]",
+    ),
+    (
+        "cli_list_workflow_hidden", "cli.py",
+        replace_once('f"{i.workflow_name} v{i.workflow_version}{mark}"', 'f"{mark}"'),
+        "test_each_command[False-list]",
+    ),
+    (
+        "event_sequence_constraint_removed", "schema.sql",
+        replace_once(
+            "occurred_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),\n"
+            "    UNIQUE (work_item_id, event_seq)",
+            "occurred_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()",
+        ),
+        "test_event_sequence_constraint",
+    ),
+    (
+        "json_key_order_not_canonical", "kernel.py",
+        replace_once("obj, sort_keys=True, separators=", "obj, sort_keys=False, separators="),
+        "test_replay_key_order_is_irrelevant",
+    ),
+    (
+        "legacy_document_keys_accepted", "kernel.py",
+        body("validate_workflow_document", "return ()"),
+        "test_legacy_document_keys_fail_closed",
+    ),
+    (
+        "history_order_reversed", "kernel.py",
+        replace_once('sql.append("ORDER BY event_seq LIMIT %s")',
+                     'sql.append("ORDER BY event_seq DESC LIMIT %s")'),
+        "test_history_cursor_windows",
+    ),
+    (
+        "database_clock_replaced", "kernel.py",
+        body("_db_now", "return datetime.fromtimestamp(0).astimezone()"),
+        "test_stamps_use_one_database_instant",
+    ),
+    (
         "open_existing_gate_removed", "kernel.py",
         replace_once("if require_existing:", "if False:"),
         "test_open_existing_refuses_without_writes",
@@ -132,7 +173,7 @@ MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
             "DELETE FROM claims WHERE expires_at <= clock_timestamp()",
             "DELETE FROM claims WHERE expires_at > clock_timestamp()",
         ),
-        "test_sweep_scoped_and_live_safe",
+        "test_sweep_scoped_and_live_safe or test_sweep_preserves_replacement_lease",
     ),
     (
         "retry_conflict_accepted",
@@ -187,7 +228,7 @@ MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
         "kernel.py",
         replace_once("if missing or nulled:", "if False:"),
         "test_transition_refusals[required] or test_transition_refusals[null] "
-        "or test_clear_refusals[required_clear]",
+        "or test_clear_refusals[required_clear] or test_generic_review_note_and_mixed_actors",
     ),
     (
         "terminal_gate_removed",
@@ -364,7 +405,8 @@ MUTANTS.extend(
             "replay_always_clean",
             "kernel.py",
             body("replay", "return ('', {}, [])"),
-            "test_replay_detects_damage or test_cli_drift_nonzero",
+            "test_replay_detects_damage or test_cli_drift_nonzero "
+            "or test_scoped_replay_ignores_other_damage",
         ),
         (
             "absent_link_removal_silent",
@@ -573,7 +615,7 @@ MUTANTS.extend(
             "history_missing",
             "kernel.py",
             body("history", "return []"),
-            "test_create_and_get",
+            "test_create_and_get or test_history_cursor_windows",
         ),
         (
             "replay_ignores_handoff_fields",
@@ -661,7 +703,8 @@ def main() -> int:
             if changed == original:
                 raise AssertionError(f"{name}: mutation changed nothing")
             (scratch / filename).write_text(changed)
-            ast.parse(changed)
+            if filename.endswith(".py"):
+                ast.parse(changed)
             code, failed, other, output = run(scratch, selection, scratch / "mutant.xml")
             if code != 1 or not failed or other:
                 print(output)

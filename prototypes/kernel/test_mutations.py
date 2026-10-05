@@ -133,12 +133,13 @@ KERNEL_PUBLIC_SURFACE = frozenset({
 })
 
 # connect() kept its call shape for every existing caller and deliberately added
-# only explicit pool controls. Pin parameters as well as names: changing a default
+# explicit pool controls and an open-existing guard. Pin parameters: changing a default
 # bound or making the timeout unconfigurable is a public-contract change even
 # though dir(Kernel) would remain identical.
 KERNEL_CONNECT_PARAMETERS = {
     "dsn": inspect.Parameter.empty,
     "schema": "public",
+    "require_existing": False,
     "pool_min_size": 1,
     "pool_max_size": 4,
     "pool_timeout": 5.0,

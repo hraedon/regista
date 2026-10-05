@@ -348,7 +348,7 @@ def test_open_existing_refuses_without_writes(
         ).fetchall()
     with pytest.raises(UnsupportedSchemaError):
         opened = Kernel.connect(dsn, schema=schema, require_existing=True)
-        opened.close()  # close a defective opener before pytest reports the failure
+        opened.close()
     with psycopg.connect(dsn) as conn:
         assert conn.execute(
             "SELECT n.oid, c.oid FROM pg_namespace n LEFT JOIN pg_class c "
