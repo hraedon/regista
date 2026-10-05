@@ -45,6 +45,8 @@ MUTANTS = [
     ('accept_removed_key', 'src/regista/workflow.schema.json', '"properties": {',
      '"properties": {"regista_version": {},',
      'tests/test_workflow_schema_pins.py::test_removed_keys_do_not_overlap_accepted_schema_keys'),
+    ('ignore_workflow_lock', KERNEL, 'function:_transaction_lock', 'return',
+     'tests/test_f1_core.py::test_concurrent_workflow_registration'),
     ('ignore_zip_collisions', GUARD, 'if key in seen:', 'if False:',
      'tests/test_distribution_vectors.py::test_a_duplicate_zip_member_fails'),
     ('ignore_record_hashes', GUARD, 'digest != f"sha256={expected}"', 'False',

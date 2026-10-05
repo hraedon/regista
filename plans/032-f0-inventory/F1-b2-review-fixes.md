@@ -119,9 +119,14 @@ The first H2/L2 run failed nine new cases against the original implementation.
 An additional failing-first no-USAGE case failed before the explicit-namespace
 fix (`1 failed, 1 passed`). Unmodified controls subsequently passed. B2 proof
 requires JUnit test-body assertion failures, excluding setup errors and skips.
-`scripts/prove_b2.py` kills ten targeted mutants, including the H2 bypass,
+`scripts/prove_b2.py` kills eleven targeted mutants, including the H2 bypass,
 code-version check, PyPI pairs/message, namespace occupancy and hidden objects,
-late legacy writes, removed-key acceptance, ZIP collisions and RECORD hashes.
+late legacy writes, workflow serialization, removed-key acceptance, ZIP collisions
+and RECORD hashes. A full proof rerun on faster temporary storage exposed a
+timing-dependent workflow-lock mutant survivor. The existing eight-worker
+registration assertion remains; its premise is now deterministic because the
+test holds the actual name lock and observes multiple blocked workers before
+releasing it. The kernel registration implementation was not changed.
 The existing `prove_f1.py` anchors remain and are rerun with all named mutants.
 
 L3 benchmark: PostgreSQL 15 in a disposable container over loopback TCP,

@@ -604,9 +604,37 @@ def test_concurrent_idempotency(registered: Kernel, same_item: bool) -> None:
         assert sorted(len(registered.history(i.id)) for i in (a, b)) == [1, 2]
 
 
-def test_concurrent_workflow_registration(kernel: Kernel, workflow: Workflow) -> None:
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        versions = list(pool.map(lambda _: kernel.register_workflow(workflow), range(8)))
+def test_concurrent_workflow_registration(
+    kernel: Kernel, workflow: Workflow, dsn: str, schema: str,
+) -> None:
+    # Hold the actual workflow-name lock before the workers reach the absent-row
+    # lookup. Require observed blocking, rather than hoping INSERTs overlap.
+    with psycopg.connect(dsn) as admin, ThreadPoolExecutor(max_workers=8) as pool:
+        admin.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                      (f"regista-kernel:{schema}:workflow:{workflow.name}",))
+        futures = [pool.submit(kernel.register_workflow, workflow) for _ in range(8)]
+        try:
+            deadline = time.monotonic() + 10
+            waiting = False
+            while time.monotonic() < deadline and not any(f.done() for f in futures):
+                row = admin.execute(
+                    "SELECT count(*) FROM pg_locks held JOIN pg_locks waiter "
+                    "ON (waiter.locktype, waiter.database, waiter.classid, waiter.objid, "
+                    "waiter.objsubid) = (held.locktype, held.database, held.classid, "
+                    "held.objid, held.objsubid) "
+                    "WHERE held.pid=pg_backend_pid() AND held.locktype='advisory' "
+                    "AND held.granted AND NOT waiter.granted"
+                ).fetchone()
+                waiting = bool(row and row[0] >= 2)
+                if waiting:
+                    break
+                time.sleep(.01)
+            assert waiting and not any(f.done() for f in futures), (
+                "concurrent registration did not serialize on its workflow-name lock"
+            )
+        finally:
+            admin.rollback()
+        versions = [f.result(timeout=10) for f in futures]
     assert versions == [1] * 8 and len(kernel.list_workflows()) == 1
 
 
