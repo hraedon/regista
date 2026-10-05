@@ -1,7 +1,7 @@
 # Plan 032 F5 — 0.8.0 release preparation (no publication)
 
 Prepared 2026-10-05. **Exact candidate commit:
-`27ebc8e1fcc603709b821d6d038720dbd4eb2966`**, branch `feat/wi364-f1-promote`,
+`0c07472ce48031c97c9775dafa617abda022ac28`**, branch `feat/wi364-f1-promote`,
 draft [PR #93](https://github.com/hraedon/regista/pull/93). Later evidence-only
 commits on that branch do not change any packaged input. Do not infer publication
 from the version bump: no tag, upload, workflow dispatch, yank or settings change
@@ -12,7 +12,7 @@ was authorized or performed.
 | Artifact | SHA-256 |
 | --- | --- |
 | `regista_hraedon-0.8.0-py3-none-any.whl` | `224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8` |
-| `regista_hraedon-0.8.0.tar.gz` | `93bf2a62f47a92359c82a64f0cca18d73abf9bd6d00973371dab43b92862df2f` |
+| `regista_hraedon-0.8.0.tar.gz` | `a0f0367d690869821e572da70b987996d745362a81d0e3153ecb9a0e134cb019` |
 
 [F3 qualification](032-f3-qualification.md) records clean wheel/sdist installs,
 installed resources/scenarios, restart, rollback/contention, terminated-worker
@@ -53,8 +53,11 @@ The build job **does rebuild**, rather than consuming a locally reviewed upload.
 A fresh full-depth `git clone --no-local --no-hardlinks` of the artifact-bearing
 tree, followed by the same `uv build`, produced **byte-identical wheel and sdist
 SHA-256 hashes above**. C1 fixes, C2 connection admission and C3 locale-independent
-catalog ordering are included in this candidate. Rebuild tooling was uv 0.12.23
-with the complete pinned Hatch backend closure in `pyproject.toml` (Hatchling
+catalog ordering are included in this candidate.
+The candidate also fixes console pytest's atomicity helper import; the revised
+sdist was fully requalified after CI exposed it. The wheel hash is unchanged.
+Rebuild tooling was uv 0.12.23 with the complete pinned Hatch backend closure
+in `pyproject.toml` (Hatchling
 1.32.4). The [final gate record](032-c3-final-gates.json) records the after-last-edit build
 and digest comparison; publication must still retain the qualified hashes.
 

@@ -17,5 +17,29 @@
       "disposition": "Retained: PostgreSQL 15 remains tested and is the example default; supported versions are documented in README, spec and operations."
     }
   ],
-  "provenance_limit": "Separate read-only actor review. Reviewer declared GPT-6 lineage; no cross-lineage review claim. Current AGENTS.md adds no independent cross-lineage acceptance gate; external owner release acceptance remains separate. Tracker writes/claims and private provenance attachments are outside task authorization."
+  "provenance_limit": "Separate read-only actor review. Reviewer declared GPT-6 lineage; no cross-lineage review claim. Current AGENTS.md adds no independent cross-lineage acceptance gate; external owner release acceptance remains separate. Tracker writes/claims and private provenance attachments are outside task authorization.",
+  "followup_reviews": [
+    {
+      "range": "4a902b50c71e5a2b242cd5dcc3748acc19563f37..0c07472ce48031c97c9775dafa617abda022ac28",
+      "actor": "/root/c3_independent_review",
+      "declared_model_lineage": "GPT-6",
+      "verdict": "approved; no blocking finding; full console requalification and final CI still required",
+      "findings": [],
+      "audit": "Pytest installs configured paths before conftest, which then inserts REGISTA_KERNEL_TEST_ROOT first before importing regista. F1 spawned CLI PYTHONPATH remains scratch. B2 uses cloned scratch root. The faulted_write helper does not import regista at module load. Installed probes use closed environments, scratch cwd and -I, and do not invoke pytest; adding root to pytest pythonpath does not affect installed-artifact isolation."
+    }
+  ],
+  "console_qualification_review": {
+    "artifact_candidate": "0c07472ce48031c97c9775dafa617abda022ac28",
+    "reviewer": "c3_independent_review, separate read-only actor; declared GPT-6, same-lineage limitation retained",
+    "verdict": "approved; no blocking findings",
+    "checks": [
+      "Only Plan 032 evidence differs from artifact candidate; JSON parses and git diff --check passes",
+      "Candidate-bearing records consistently bind 0c07472; F3/F5/current artifacts/independent rebuild hashes agree",
+      "29 records reconcile: 27 normal exit0, expected missingDSN4, mutant wrapper0 with inner1/3failures/0errors/0skips",
+      "Console suite counts/timings,165 F1/518nodes,14 reviewer originals/four arms,17 pristine/tamper vectors and recovery claims align",
+      "Old 4a902b5 CI and 27ebc8e artifact are accurately preserved as failed historical evidence; new green final-head CI remains required",
+      "Credential-bearing DSNs redacted; final-head independent guard/rebuild and green CI still follow"
+    ],
+    "no_files_or_tracker_writes_by_reviewer": true
+  }
 }

@@ -42,7 +42,7 @@ required external gate, reported with its exact URL/jobs after the branch push.
 
 ## C3 qualification evidence
 
-Artifact candidate: `27ebc8e1fcc603709b821d6d038720dbd4eb2966`.
+Artifact candidate: `0c07472ce48031c97c9775dafa617abda022ac28`.
 Evidence-only changes to Plan 032 and CHANGELOG are excluded from the
 distributions. The qualified and independently
 rebuilt hashes are:
@@ -50,20 +50,20 @@ rebuilt hashes are:
 | Artifact | SHA-256 |
 | --- | --- |
 | `regista_hraedon-0.8.0-py3-none-any.whl` | `224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8` |
-| `regista_hraedon-0.8.0.tar.gz` | `93bf2a62f47a92359c82a64f0cca18d73abf9bd6d00973371dab43b92862df2f` |
+| `regista_hraedon-0.8.0.tar.gz` | `a0f0367d690869821e572da70b987996d745362a81d0e3153ecb9a0e134cb019` |
 
 ```text
 ruff: All checks passed!
 mypy: Success: no issues found in 5 source files
-suite-314-pg15: 1005 passed, 67 subtests passed in 391.42s (0:06:31)
-suite-311-pg15: 1005 passed, 67 subtests passed in 391.58s (0:06:31)
-suite-314-alpine: 1004 passed, 1 skipped, 67 subtests passed in 451.02s (0:07:31)
-suite-314-pg16: 1005 passed, 67 subtests passed in 361.61s (0:06:01)
-suite-314-pg17: 1005 passed, 67 subtests passed in 329.95s (0:05:29)
+suite-314-pg15: 1005 passed, 67 subtests passed in 403.73s (0:06:43)
+suite-311-pg15: 1005 passed, 67 subtests passed in 398.38s (0:06:38)
+suite-314-alpine: 1004 passed, 1 skipped, 67 subtests passed in 473.14s (0:07:53)
+suite-314-pg16: 1005 passed, 67 subtests passed in 386.78s (0:06:26)
+suite-314-pg17: 1005 passed, 67 subtests passed in 352.11s (0:05:52)
 prove-f1: 165 mutants killed; 518 distinct test nodes proved
 prove-b2: 11 mutants killed; no survivors
 prove-c1-artifacts: 9 artifact/workflow mutants killed
-readme: 1 passed in 0.83s
+readme: 1 passed in 0.78s
 verify-baseline: verify-baseline: ok
 verify-ledger: verify-ledger: ok
 check-tree: check-tree: ok
@@ -109,8 +109,10 @@ were the atomicity test's import of `scripts.qualify_distribution`: console
 The same two failures were reproduced locally with the console entry point.
 The pytest configuration now explicitly includes the checkout root, preserving
 the mutant source override inserted first by conftest. Targeted console tests
-passed (`5 passed`), and the full qualification is repeated with console pytest
-against all four servers before another branch push and final-commit CI.
+passed (`5 passed`), and full qualification passed again with console pytest
+on all four servers.
+The revised sdist hash above includes this pytest configuration change; the
+wheel hash is unchanged. Final-commit CI is still required after the branch push.
 
 [Initial CI attempts](https://github.com/hraedon/regista/actions/runs/37366341468)
 are retained as failures, including the infrastructure cancellations; they are

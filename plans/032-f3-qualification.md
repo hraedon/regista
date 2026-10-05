@@ -1,6 +1,6 @@
 # Plan 032 F3 — C3 distribution, restart and recovery qualification
 
-Date: 2026-10-05. Artifact candidate: `27ebc8e1fcc603709b821d6d038720dbd4eb2966` on
+Date: 2026-10-05. Artifact candidate: `0c07472ce48031c97c9775dafa617abda022ac28` on
 `feat/wi364-f1-promote` (draft PR #93). This replaces the C2 qualification after
 its collation-dependent CI failure.
 Evidence-only follow-up commits do not change packaged inputs. All databases are
@@ -9,7 +9,7 @@ disposable child databases of the user-authorized local test service.
 | Artifact | SHA-256 |
 | --- | --- |
 | `regista_hraedon-0.8.0-py3-none-any.whl` | `224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8` |
-| `regista_hraedon-0.8.0.tar.gz` | `93bf2a62f47a92359c82a64f0cca18d73abf9bd6d00973371dab43b92862df2f` |
+| `regista_hraedon-0.8.0.tar.gz` | `a0f0367d690869821e572da70b987996d745362a81d0e3153ecb9a0e134cb019` |
 
 A full-depth independent clone (`--no-local --no-hardlinks`) rebuilt both artifacts
 byte-identically. The authoritative guard runs there with an empty HOME, no
@@ -18,6 +18,12 @@ It rebuilds the sdist with pip and uv and binds every wheel member's bytes/mode.
 The exact after-last-manual-edit commands, exit codes and stdout/stderr are in the
 [C3 final gate record](032-c3-final-gates.json). Qualification requires that record
 plus a green GitHub CI run on the final evidence commit.
+
+This candidate also fixes the atomicity helper import under console pytest,
+which CI exposed after the collation fix. All five full local suites were repeated
+through that entry point. The wheel hash is unchanged; the sdist hash includes
+the pytest configuration change. [CI follow-up evidence](032-c3-ci-followup.json)
+preserves the earlier failed attempts and local reproduction.
 
 ## Installed-artifact method
 
@@ -61,12 +67,12 @@ uv build
 uvx --from twine==7.0.0 twine check dist/*.whl dist/*.tar.gz
 PATH=/tmp/regista-pg15-tools/extracted/usr/lib/postgresql/15/bin:$PATH \
   .venv/bin/python scripts/qualify_distribution.py dist \
-  --dsn "$REGISTA_TEST_DSN" --output /tmp/regista-c3-f3-qualified
+  --dsn "$REGISTA_TEST_DSN" --output /tmp/regista-c3-console-f3-qualified
 .venv/bin/python scripts/smoke_installed.py dist
 .venv/bin/ruff check src/ tests/ examples/ scripts/
 .venv/bin/mypy
-REGISTA_REQUIRE_DB=1 .venv/bin/python -m pytest tests/ -q
-REGISTA_REQUIRE_DB=1 /tmp/regista-py311/bin/python -m pytest tests/ -q
+REGISTA_REQUIRE_DB=1 .venv/bin/pytest tests/ -q
+REGISTA_REQUIRE_DB=1 /tmp/regista-py311/bin/pytest tests/ -q
 .venv/bin/python scripts/prove_b2.py
 .venv/bin/python scripts/prove_c1_artifacts.py
 uv lock --check
@@ -141,15 +147,15 @@ F5 owner prerequisites. No tags, dispatches, uploads or settings changes are mad
 ```text
 ruff: All checks passed!
 mypy: Success: no issues found in 5 source files
-suite-314-pg15: 1005 passed, 67 subtests passed in 391.42s (0:06:31)
-suite-311-pg15: 1005 passed, 67 subtests passed in 391.58s (0:06:31)
-suite-314-alpine: 1004 passed, 1 skipped, 67 subtests passed in 451.02s (0:07:31)
-suite-314-pg16: 1005 passed, 67 subtests passed in 361.61s (0:06:01)
-suite-314-pg17: 1005 passed, 67 subtests passed in 329.95s (0:05:29)
+suite-314-pg15: 1005 passed, 67 subtests passed in 403.73s (0:06:43)
+suite-311-pg15: 1005 passed, 67 subtests passed in 398.38s (0:06:38)
+suite-314-alpine: 1004 passed, 1 skipped, 67 subtests passed in 473.14s (0:07:53)
+suite-314-pg16: 1005 passed, 67 subtests passed in 386.78s (0:06:26)
+suite-314-pg17: 1005 passed, 67 subtests passed in 352.11s (0:05:52)
 prove-f1: 165 mutants killed; 518 distinct test nodes proved
 prove-b2: 11 mutants killed; no survivors
 prove-c1-artifacts: 9 artifact/workflow mutants killed
-readme: 1 passed in 0.83s
+readme: 1 passed in 0.78s
 verify-baseline: verify-baseline: ok
 verify-ledger: verify-ledger: ok
 check-tree: check-tree: ok

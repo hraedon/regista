@@ -1,0 +1,52 @@
+{
+  "initial_run": "https://github.com/hraedon/regista/actions/runs/37366341468",
+  "head_sha": "4a902b50c71e5a2b242cd5dcc3748acc19563f37",
+  "artifact_candidate": "27ebc8e1fcc603709b821d6d038720dbd4eb2966",
+  "attempt_1": {
+    "lockfile": "success",
+    "other_seven_jobs": "cancelled before execution",
+    "annotation": "The job was not acquired by Runner of type hosted even after multiple attempts"
+  },
+  "retry": {
+    "command": [
+      "gh",
+      "run",
+      "rerun",
+      "37366341468",
+      "--failed"
+    ],
+    "exit_code": 0,
+    "event": "pull_request",
+    "run_attempt": 2
+  },
+  "attempt_2": {
+    "four_executed_jobs": "failure: two atomicity tests could not import scripts.qualify_distribution; all three collation tests passed",
+    "summaries": [
+      "Kernel (Python 3.13, PostgreSQL 15)\tKernel protection, scenarios and mutation checks (PostgreSQL)\t2026-10-05T20:27:58.0548722Z 2 failed, 1003 passed, 67 subtests passed in 196.53s (0:03:16)",
+      "Kernel (Python 3.14, PostgreSQL 15)\tKernel protection, scenarios and mutation checks (PostgreSQL)\t2026-10-05T20:28:41.1436082Z 2 failed, 1003 passed, 67 subtests passed in 228.15s (0:03:48)",
+      "Kernel (Python 3.12, PostgreSQL 15)\tKernel protection, scenarios and mutation checks (PostgreSQL)\t2026-10-05T20:28:17.8999313Z 2 failed, 1003 passed, 67 subtests passed in 216.19s (0:03:36)",
+      "Kernel (Python 3.14, PostgreSQL 16)\tKernel protection, scenarios and mutation checks (PostgreSQL)\t2026-10-05T20:28:58.2013472Z 2 failed, 1003 passed, 67 subtests passed in 253.11s (0:04:13)"
+    ],
+    "remaining_three_jobs": "cancelled before execution",
+    "lockfile": "success"
+  },
+  "defect": "pytest console does not implicitly place the checkout root on sys.path; python -m pytest does, masking this helper import locally",
+  "fix": "Explicit pytest pythonpath root alongside src and tests; conftest retains mutant-root precedence",
+  "local_reproduction_command": [
+    ".venv/bin/pytest",
+    "tests/test_f1_core.py::test_event_projection_atomicity",
+    "-q"
+  ],
+  "before_expected_exit_code": 1,
+  "before_stdout": "FF                                                                       [100%]\n=================================== FAILURES ===================================\n___________________ test_event_projection_atomicity[create] ____________________\n\nregistered = <regista.kernel.Kernel object at 0x70e712f82270>\ndsn = 'postgresql://regista_test:<disposable-password>@127.0.0.1:55498/regista_test'\nschema = 'f1_14a56446e99f446d927795b62262f638', phase = 'create'\n\n    @pytest.mark.parametrize(\"phase\", [\"create\", \"transition\"])\n    def test_event_projection_atomicity(registered: Kernel, dsn: str, schema: str, phase: str) -> None:\n        item = create(registered)\n>       from scripts.qualify_distribution import faulted_write\nE       ModuleNotFoundError: No module named 'scripts'\n\ntests/test_f1_core.py:329: ModuleNotFoundError\n_________________ test_event_projection_atomicity[transition] __________________\n\nregistered = <regista.kernel.Kernel object at 0x70e712f63110>\ndsn = 'postgresql://regista_test:<disposable-password>@127.0.0.1:55498/regista_test'\nschema = 'f1_56d888becc0a473d8b7a3b5e009a50cb', phase = 'transition'\n\n    @pytest.mark.parametrize(\"phase\", [\"create\", \"transition\"])\n    def test_event_projection_atomicity(registered: Kernel, dsn: str, schema: str, phase: str) -> None:\n        item = create(registered)\n>       from scripts.qualify_distribution import faulted_write\nE       ModuleNotFoundError: No module named 'scripts'\n\ntests/test_f1_core.py:329: ModuleNotFoundError\n=========================== short test summary info ============================\nFAILED tests/test_f1_core.py::test_event_projection_atomicity[create] - Modul...\nFAILED tests/test_f1_core.py::test_event_projection_atomicity[transition] - M...\n2 failed in 0.52s\n",
+  "after_command": [
+    ".venv/bin/pytest",
+    "tests/test_f1_core.py::test_event_projection_atomicity",
+    "tests/test_c3_collation.py",
+    "-q"
+  ],
+  "after_exit_code": 0,
+  "after_stdout": ".....                                                                    [100%]\n5 passed in 1.72s\n",
+  "new_candidate": "0c07472ce48031c97c9775dafa617abda022ac28",
+  "completion_requires": "new artifact qualification and green final-commit CI; previous runs remain failures"
+}
