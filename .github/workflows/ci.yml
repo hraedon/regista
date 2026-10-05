@@ -53,7 +53,10 @@ jobs:
           set -e
           cat missing-dsn.log
           test "$rc" = 4
-          rg 'REGISTA_TEST_DSN is required' missing-dsn.log
+          python - <<'PYTHON'
+          from pathlib import Path
+          assert "REGISTA_TEST_DSN is required" in Path("missing-dsn.log").read_text()
+          PYTHON
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       - name: Build and exercise installed wheel away from checkout
         run: |

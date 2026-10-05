@@ -111,6 +111,10 @@ CI runs the sole suite/scenarios/mutation checks on postgres:15 and CPython
 builds and installs the wheel into a clean temporary venv, removes inherited
 Python path overrides, changes away from the checkout, checks `regista --help`
 and package resources, and executes the document example on a fresh database.
+The first remote run passed all four test suites and the authoritative artifact
+guard, then exposed an unavailable `rg` binary in the missing-DSN assertion step.
+That step now checks its log using Python standard-library code; the exit-4
+requirement remains mandatory. All post-edit gates are rerun after this fix.
 Retired-feature/epoch-debt/old slow-tier jobs are removed. Publication plumbing
 is retained, but nothing is published here.
 
