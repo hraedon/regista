@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
+import traceback
 import uuid
 from typing import Any, NoReturn
 
@@ -583,7 +585,22 @@ DISPATCH = {
 }
 
 
+class _HumanLogFilter(logging.Filter):
+    """Pool diagnostics carry caller/server text through the human renderer too."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _escape_human(record.getMessage())
+        record.args = ()
+        if record.exc_info:
+            record.exc_text = _escape_human("".join(traceback.format_exception(*record.exc_info)))
+        return True
+
+
+_HUMAN_LOG_FILTER = _HumanLogFilter()
+
+
 def main(argv: list[str] | None = None) -> int:
+    logging.getLogger("psycopg.pool").addFilter(_HUMAN_LOG_FILTER)
     supplied = sys.argv[1:] if argv is None else argv
     if "replay" in supplied:
         # argparse rejects the removed command; explain the semantic break too.

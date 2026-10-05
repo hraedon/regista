@@ -38,7 +38,8 @@ handoffs and read-only history consistency checks over PostgreSQL.
 - Idempotent retries stream history with bounded memory. Replay binds transition
   names into event digests and verifies pinned source/destination rules. This changes
   the unpublished baseline-1 digest contract without changing `schema.sql`.
-- CLI human values escape terminal/log/bidi controls; JSON serialization is unchanged.
+- CLI human values and pool diagnostics escape terminal/log/bidi controls;
+  JSON serialization is unchanged.
   Malformed UUIDs/fields and JSON parser limits use the documented exit-2 envelope.
 - Distribution guards reject gzip/tar trailers and bind sdist metadata to the wheel.
   Workflow actions, uv plus platform checksum, and twine are pinned; publish checks

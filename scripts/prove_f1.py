@@ -1193,7 +1193,7 @@ MUTANTS.extend([
     ("c1_transition_destination", "kernel.py",
      replace_once('if payload["to"] != to:', 'if False:'), "test_replay_pinned_destination"),
     ("c1_human_controls", "cli.py", body("_escape_human", "return str(value)"),
-     "test_cli_human_controls_escaped and not health"),
+     "(test_cli_human_controls_escaped and not health) or test_cli_logging_controls_escaped"),
     ("c1_field_envelope", "cli.py", replace_once(
         'raise InvalidFieldError(f"--field expects key=value, got {p!r}")',
         'raise SystemExit(f"--field expects key=value, got {p!r}")'),
@@ -1218,6 +1218,9 @@ MUTANTS.extend([
     ("c1_catalog_helper", "kernel.py", method_replace("_catalog_record",
         "SELECT pg_catalog.jsonb_build_object(", "SELECT jsonb_build_object("),
      "test_admission_never_calls_destination_catalog_helper"),
+    ("c1_log_binding", "cli.py", replace_once(
+        '    logging.getLogger("psycopg.pool").addFilter(_HUMAN_LOG_FILTER)', '    pass'),
+     "test_cli_logging_controls_escaped"),
 ])
 
 def run(

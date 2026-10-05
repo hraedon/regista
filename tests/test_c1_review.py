@@ -341,3 +341,34 @@ def test_malformed_marker_is_unsupported(dsn: str, schema: str) -> None:
         conn.execute(SQL("CREATE TABLE {}.kernel_meta(unrelated int)").format(Identifier(schema)))
     with pytest.raises(UnsupportedSchemaError, match="baseline"):
         Kernel.connect(dsn, schema=schema)
+
+
+def test_cli_logging_controls_escaped(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    import io
+    import logging
+
+    import regista.cli as commands
+    from regista import PoolUnavailableError
+
+    hostile = "user\nFORGED\x1b[31m\x7f\x85\u202e"
+    logger = logging.getLogger("psycopg.pool")
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    logger.addHandler(handler)
+
+    def failed_connection(args: Any) -> Any:
+        logger.warning("connection for %s failed", hostile)
+        raise PoolUnavailableError("connection refused")
+
+    monkeypatch.setattr(commands, "_kernel", failed_connection)
+    try:
+        assert commands.main(["--json", "health"]) == 2
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["exit_code"] == 2
+        assert captured.err == "refused: connection refused\n"
+        message = buffer.getvalue()
+        assert message.count("\n") == 1
+        assert "\\nFORGED" in message
+        assert not any(c in message for c in ("\x1b", "\x7f", "\x85", "\u202e"))
+    finally:
+        logger.removeHandler(handler)
