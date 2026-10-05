@@ -14,6 +14,32 @@ from prove_f1 import body, replace_once
 
 ROOT = Path(__file__).parents[1]
 MUTANTS = [
+    ("c4_gzip_encoding", "scripts/check_published_migrations.py",
+     replace_once("if encoded.getvalue() != blob:", "if False:"),
+     "test_c4_sdist_canonical_bytes and gzip"),
+    ("c4_tar_metadata", "scripts/check_published_migrations.py",
+     replace_once("if (member.mtime != _SDIST_MTIME or member.mode not in (0o644, 0o755)\n"
+                  "                    or member.type != tarfile.REGTYPE or member.linkname\n"
+                  "                    or member.devmajor or member.devminor):", "if False:"),
+     "test_c4_sdist_canonical_bytes and tar"),
+    ("c4_guard_upload_order", ".github/workflows/publish.yml",
+     replace_once("      - uses: actions/upload-artifact@",
+                  "      - run: uvx --from twine==7.0.0 twine check dist/*\n"
+                  "      - uses: actions/upload-artifact@"),
+     "test_c4_guard_is_immediately_uploaded"),
+    ("c4_twine_dependency", ".github/workflows/publish.yml",
+     replace_once("needs: [build, twine]", "needs: [build]"),
+     "test_c4_guard_is_immediately_uploaded"),
+    ("c4_tool_hashes", ".github/workflows/publish.yml",
+     replace_once("--require-hashes -r .github/twine-requirements.txt",
+                  "-r .github/twine-requirements.txt"),
+     "test_c4_release_tool_installations"),
+    ("c4_frozen_verification", ".github/workflows/publish.yml",
+     replace_once("uv sync --frozen --extra dev", "uv sync --extra dev"),
+     "test_c4_verification_uses_frozen_project_lock"),
+    ("c4_summary_hashes", ".github/workflows/publish.yml",
+     replace_once("sha256sum dist/*.whl dist/*.tar.gz", "echo unchecked"),
+     "test_c4_approval_summary_contains_exact_hashes"),
     ("gzip_tar_envelope", "scripts/check_published_migrations.py",
      body("_sdist_tar", "import gzip\nreturn gzip.decompress(blob)"),
      "test_c1_sdist_envelope_refuses_trailers"),
@@ -68,12 +94,15 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="regista-c1-artifacts-") as directory:
         scratch = Path(directory)
         files = {file for _,file,_,_ in MUTANTS}
-        files.add("scripts/schema-baseline.json")
+        files.update(("scripts/schema-baseline.json", ".github/twine-requirements.txt",
+                      ".github/build-requirements.txt", "pyproject.toml"))
         for file in files:
             target = scratch / file
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / file, target)
-        code, failed, errors, output = run(scratch, "c1 or actions_and_uv or publish_requires")
+        code, failed, errors, output = run(
+            scratch, "c1 or c4 or actions_and_uv or publish_requires"
+        )
         if code or failed or errors:
             raise SystemExit("unmodified control failed:\n" + output)
         print("CONTROL passed: " + output.strip().splitlines()[-1], flush=True)
@@ -89,7 +118,7 @@ def main() -> None:
                 raise SystemExit(f"{name}: not proved by test-body failures:\n{output}")
             evidence.append({"mutant": name, "failures": failed, "exit_code": code})
             print(f"KILLED {name}: {len(failed)} test-body failures", flush=True)
-    (ROOT / "plans/032-c1-artifact-mutations.json").write_text(
+    (ROOT / "plans/032-c4-artifact-mutations.json").write_text(
         json.dumps(evidence, indent=2) + "\n")
     print(f"{len(MUTANTS)} artifact/workflow mutants killed")
 

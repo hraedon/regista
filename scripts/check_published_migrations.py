@@ -24,6 +24,7 @@ import ast
 import base64
 import email.parser
 import email.policy
+import gzip
 import hashlib
 import io
 import json
@@ -693,6 +694,7 @@ def sdist_file(blob: bytes, rel: str) -> bytes | None:
 
 
 _SDIST_PACKAGE_DIRS = ("src/regista/",)
+_SDIST_MTIME = 1580601600  # Hatchling's reproducible default, not wall-clock time.
 
 
 def _sdist_tar(blob: bytes, where: str) -> bytes:
@@ -706,6 +708,12 @@ def _sdist_tar(blob: bytes, where: str) -> bytes:
         raise GuardError(f"{where}: invalid gzip member") from exc
     if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
         raise GuardError(f"{where}: gzip must contain exactly one complete member and no trailer")
+    encoded = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=encoded,
+                       compresslevel=9, mtime=_SDIST_MTIME) as stream:
+        stream.write(raw)
+    if encoded.getvalue() != blob:
+        raise GuardError(f"{where}: noncanonical gzip encoding (qualified level 9/header required)")
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
         end = 0
         for member in tf.getmembers():
@@ -718,6 +726,10 @@ def _sdist_tar(blob: bytes, where: str) -> bytes:
                 raise GuardError(f"{where}: noncanonical tar envelope header")
             if member.uid or member.gid or member.uname or member.gname:
                 raise GuardError(f"{where}: unexpected ownership fields in tar envelope")
+            if (member.mtime != _SDIST_MTIME or member.mode not in (0o644, 0o755)
+                    or member.type != tarfile.REGTYPE or member.linkname
+                    or member.devmajor or member.devminor):
+                raise GuardError(f"{where}: noncanonical tar envelope metadata")
         # Two zero end-of-archive blocks followed only by the required record padding.
         expected_length = ((end + 1024 + 10239) // 10240) * 10240
         if len(raw) != expected_length or any(raw[end:]):
@@ -915,21 +927,31 @@ def _compare(actual: Mapping[str, str], expected: Mapping[str, str], where: str)
 # Checks
 
 
-#: Build frontends whose isolated build of each sdist must reproduce the
-#: expected migrations. The pip entry runs the interpreter running this guard.
+#: Each frontend runs in a fresh environment containing the hash-locked closure.
 REBUILDERS: list[tuple[str, list[str]]] = [
-    ("uv", ["uv", "build", "--wheel", "--out-dir", "{out}", "{sdist}"]),
-    ("pip", [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", "{out}", "{sdist}"]),
+    ("uv", ["uv", "build", "--python", "{python}", "--no-build-isolation",
+            "--wheel", "--out-dir", "{out}", "{sdist}"]),
+    ("pip", ["{python}", "-m", "pip", "wheel", "--no-build-isolation",
+             "--no-deps", "--wheel-dir", "{out}", "{sdist}"]),
 ]
 
 
 def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
-    cmd = [a.format(out=out, sdist=sdist) for a in argv]
     # Keep uv's cache out of the reviewed checkout and artifact directory. A
     # caller-level UV_CACHE_DIR inside the source tree would otherwise mutate
     # the very input this guard is authenticating.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["UV_CACHE_DIR"] = str(out / ".uv-cache")
+    python = out / ".build-env" / "bin" / "python"
+    for preparation in (
+        ["uv", "venv", "--python", sys.executable, str(python.parent.parent)],
+        ["uv", "pip", "install", "--python", str(python), "--require-hashes",
+         "-r", str(REPO_ROOT / ".github/build-requirements.txt")],
+    ):
+        proc = subprocess.run(preparation, capture_output=True, text=True, env=env)
+        if proc.returncode != 0:
+            raise GuardError(f"{sdist.name}: {label} could not install hash-locked build tools")
+    cmd = [a.format(out=out, sdist=sdist, python=python) for a in argv]
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         raise GuardError(f"{sdist.name}: {label} could not build a wheel from it")

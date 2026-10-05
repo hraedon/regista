@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -27,6 +28,8 @@ import tarfile
 import unicodedata
 import warnings
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -187,6 +190,21 @@ def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
     return buf.getvalue()
 
 
+def _tar_info(name: str) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.mtime = 1580601600
+    return info
+
+
+@contextmanager
+def _tar_writer(buf: io.BytesIO, **kwargs: Any) -> Iterator[tarfile.TarFile]:
+    with gzip.GzipFile(filename="", fileobj=buf, mode="wb", compresslevel=9,
+                       mtime=1580601600) as stream:
+        with tarfile.open(fileobj=stream, mode="w",
+                          **{"format": tarfile.USTAR_FORMAT, **kwargs}) as tf:
+            yield tf
+
+
 def _sdist_bytes(
     files: dict[str, bytes],
     extra: list[tarfile.TarInfo] = (),  # type: ignore[assignment]
@@ -194,12 +212,12 @@ def _sdist_bytes(
     pkg_info: bytes | None = METADATA,
 ) -> bytes:
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    with _tar_writer(buf) as tf:
         base = {"pyproject.toml": PYPROJECT}
         if pkg_info is not None:
             base["PKG-INFO"] = pkg_info
         for name, data in {**base, **files}.items():
-            info = tarfile.TarInfo(f"r-0.0.0/{name}")
+            info = _tar_info(f"r-0.0.0/{name}")
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
         for info in extra:
@@ -296,7 +314,7 @@ def _symlink_info(name: str) -> zipfile.ZipInfo:
 
 
 def _tar_member(name: str, kind: bytes, linkname: str = "") -> tarfile.TarInfo:
-    info = tarfile.TarInfo(f"r-0.0.0/{name}")
+    info = _tar_info(f"r-0.0.0/{name}")
     info.type = kind
     info.linkname = linkname
     return info
@@ -598,11 +616,11 @@ def _good_wheel() -> bytes:
 
 def _pax_sdist(pax: dict[str, str], global_: bool = False) -> bytes:
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT,
-                      pax_headers=pax if global_ else None) as tf:
+    with _tar_writer(buf, format=tarfile.PAX_FORMAT,
+                     pax_headers=pax if global_ else None) as tf:
         for name, data in {"PKG-INFO": b"x", "pyproject.toml": PYPROJECT,
                            **_sdist_files(BASE)}.items():
-            info = tarfile.TarInfo(f"r-0.0.0/{name}")
+            info = _tar_info(f"r-0.0.0/{name}")
             info.size = len(data)
             if not global_ and name == "PKG-INFO":
                 info.pax_headers = pax
@@ -700,11 +718,11 @@ def test_round_n1_shapes_fail(tmp_path: Path, shape: str) -> None:
 def test_an_sdist_with_two_roots_or_a_top_level_file_fails(tmp_path: Path) -> None:
     for extra_name in ("other-0.0.0/x.txt", "toplevel.txt"):
         buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        with _tar_writer(buf) as tf:
             for name, data in {"r-0.0.0/PKG-INFO": b"x", "r-0.0.0/pyproject.toml": PYPROJECT,
                                **{f"r-0.0.0/{k}": v for k, v in _sdist_files(BASE).items()},
                                extra_name: b"x"}.items():
-                info = tarfile.TarInfo(name)
+                info = _tar_info(name)
                 info.size = len(data)
                 tf.addfile(info, io.BytesIO(data))
         assert "one top-level directory" in _verdict(_dist(tmp_path / extra_name[:3], None,
@@ -1438,14 +1456,14 @@ def test_the_rebuild_binding_compares_modes(
 
 
 def test_an_executable_sdist_member_in_package_data_is_refused(tmp_path: Path) -> None:
-    info = tarfile.TarInfo("r-0.0.0/src/regista/__init__.py")
+    info = _tar_info("r-0.0.0/src/regista/__init__.py")
     info.mode = 0o755
     files = dict(_sdist_files(BASE))
     files.pop("src/regista/__init__.py", None)
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    with _tar_writer(buf) as tf:
         for name, data in {"PKG-INFO": METADATA, "pyproject.toml": PYPROJECT, **files}.items():
-            ti = tarfile.TarInfo(f"r-0.0.0/{name}")
+            ti = _tar_info(f"r-0.0.0/{name}")
             ti.size = len(data)
             tf.addfile(ti, io.BytesIO(data))
         tf.addfile(info, io.BytesIO(b""))
@@ -1717,8 +1735,14 @@ def test_c1_sdist_envelope_refuses_trailers(trailer: str) -> None:
     elif trailer == "raw":
         blob += b"unreviewed trailer"
     else:
-        blob = gzip.compress(gzip.decompress(blob) +
-                             (b"unreviewed trailer" if trailer == "tar-data" else b"\0" * 10240))
+        raw = gzip.decompress(blob) + (
+            b"unreviewed trailer" if trailer == "tar-data" else b"\0" * 10240
+        )
+        buf = io.BytesIO()
+        with gzip.GzipFile(filename="", fileobj=buf, mode="wb", compresslevel=9,
+                           mtime=1580601600) as stream:
+            stream.write(raw)
+        blob = buf.getvalue()
     with pytest.raises(guard.GuardError, match=r"gzip|tar envelope"):
         guard.read_sdist(blob, "r-0.0.0.tar.gz")
 
@@ -1744,3 +1768,67 @@ def test_c1_sdist_root_is_bound() -> None:
     # Naming correctness must apply even without repository binding.
     with pytest.raises(guard.GuardError, match=r"root|name|version"):
         guard.read_sdist(blob, "wrong-9.9.9.tar.gz")
+
+
+@pytest.mark.parametrize("vector", [
+    "gzip-mtime", "gzip-filename", "gzip-os-byte", "gzip-xfl-byte",
+    "gzip-different-deflate", "tar-member-mtime", "tar-member-mode-0600",
+    "tar-uid", "tar-gid", "tar-uname", "tar-gname", "tar-type", "tar-linkname",
+    "tar-devmajor", "tar-devminor",
+])
+def test_c4_sdist_canonical_bytes(vector: str) -> None:
+    pristine = _sdist_bytes(_sdist_files(BASE))
+    assert guard.read_sdist(pristine, "r-0.0.0.tar.gz") == {
+        name: _sha(data) for name, data in BASE.items()
+    }
+    blob = bytearray(pristine)
+    if vector == "gzip-mtime":
+        blob[4:8] = b"\x01\x02\x03\x04"
+    elif vector == "gzip-os-byte":
+        blob[9] = 3
+    elif vector == "gzip-xfl-byte":
+        blob[8] = 4
+    elif vector == "gzip-filename":
+        blob[3] = 8
+        blob[10:10] = b"review.tar\0"
+    elif vector == "gzip-different-deflate":
+        blob = bytearray(gzip.compress(gzip.decompress(pristine), compresslevel=1,
+                                      mtime=1580601600))
+    else:
+        changes = {
+            "tar-member-mtime": ("mtime", 123456789),
+            "tar-member-mode-0600": ("mode", 0o600),
+            "tar-uid": ("uid", 1), "tar-gid": ("gid", 1),
+            "tar-uname": ("uname", "owner"), "tar-gname": ("gname", "group"),
+            "tar-type": ("type", tarfile.AREGTYPE), "tar-linkname": ("linkname", "other"),
+            "tar-devmajor": ("devmajor", 1), "tar-devminor": ("devminor", 1),
+        }
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(pristine), mode="r:gz") as source:
+            with _tar_writer(buf) as target:
+                for member in source:
+                    data = source.extractfile(member)
+                    assert data is not None
+                    payload = data.read()
+                    if member.name.endswith("/PKG-INFO"):
+                        key, value = changes[vector]
+                        setattr(member, key, value)
+                    target.addfile(member, io.BytesIO(payload))
+        blob = bytearray(buf.getvalue())
+        if vector in ("tar-devmajor", "tar-devminor"):
+            # TarInfo.tobuf deliberately omits device fields for regular files.
+            raw = bytearray(gzip.decompress(blob))
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as source:
+                offset = next(m.offset for m in source if m.name.endswith("/PKG-INFO"))
+            field = 329 if vector == "tar-devmajor" else 337
+            raw[offset + field:offset + field + 8] = b"0000001\0"
+            raw[offset + 148:offset + 156] = b" " * 8
+            checksum = sum(raw[offset:offset + 512])
+            raw[offset + 148:offset + 156] = f"{checksum:06o}\0 ".encode()
+            encoded = io.BytesIO()
+            with gzip.GzipFile(filename="", fileobj=encoded, mode="wb", compresslevel=9,
+                               mtime=1580601600) as stream:
+                stream.write(raw)
+            blob = bytearray(encoded.getvalue())
+    with pytest.raises(guard.GuardError, match=r"gzip|tar envelope"):
+        guard.read_sdist(bytes(blob), "r-0.0.0.tar.gz")
