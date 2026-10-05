@@ -1169,6 +1169,9 @@ MUTANTS.extend([
         "# Verify even freshly initialized resources before committing any DDL.\n"
         "        self._validate_baseline(self._conn)", "pass"),
      "test_fresh_initialization_validates_before_commit"),
+    ("c2_empty_write_refusal", "kernel.py", method_replace("_require_writable_schema",
+        "except psycopg.errors.UndefinedTable as exc:", "except ZeroDivisionError as exc:"),
+     "test_write_before_initialization_preserves_schema_refusal"),
     ("c1_special_names", "kernel.py",
      replace_once('if schema == "$user" or schema.startswith("pg_") '
                   'or schema == "information_schema":',

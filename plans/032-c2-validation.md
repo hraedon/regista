@@ -20,7 +20,7 @@ refusal after recycling, with no extra rows written by the refused connection.
 
 Proof: new tests control physical identity for growth/replacement and pre-bootstrap
 connections. Existing counterfeit/partial/extra/index vectors are tested before
-writes on recycled connections and in both opener modes. Four C2 mutants cover
+writes on recycled connections and in both opener modes. Four initial C2 mutants cover
 skipped admission, caching an empty destination, omitted existing initialization
 validation, and omitted fresh initialization validation. The B2 late-legacy mutant
 now removes physical admission, matching the new location of the protection.
@@ -33,3 +33,13 @@ Updated focused tests passed: 71 passed in 25.29s. An independent read-only agen
 review found no correctness blockers; its focused selection passed 54 tests,
 130 deselected in 15.03s. This is same-model agent review, not external cross-lineage
 acceptance. Full acceptance records will be appended after final qualification.
+
+
+The initial full suites passed 1001 tests and 67 subtests each, but independent
+follow-up review found an uncovered refusal-type regression: an ordinary write to
+a precreated empty schema had become `DatabaseOperationError` from UndefinedTable,
+where C1 returned `UnsupportedSchemaError`. A failing-first test confirmed it.
+The cheap marker query now translates UndefinedTable to the original refusal type,
+without adding queries on the successful path. A fifth C2 mutant protects this
+translation. The superseded F1 proof was stopped; that interrupted run is not
+passing mutation evidence. Every gate is being rerun after this final runtime edit.

@@ -18,8 +18,9 @@ record will be committed here. No completion is claimed by this scope declaratio
 
 ## Fixed candidate and evidence contracts
 
-Artifact candidate: `8ff80ade3972311c6e6568f3afae415761a9a9ca`. Fresh build and
-independent-clone hashes are in F3/F5. The following matrix maps each review ID to
+Historical C1 artifact candidate: `8ff80ade3972311c6e6568f3afae415761a9a9ca`.
+Stage C2 supersedes it with `c043f19e9937362ce40509403c436819e83dc1f4`; current
+artifact hashes and qualification are in F3/F5 and the C2 report. The following matrix maps each review ID to
 its fix and executable proof; the generated [gate record](032-c1-final-gates.json)
 and [reviewer record](032-c1-reviewer-probes.json) supply exact results. Failing-first
 logs are preserved in [regression evidence](032-c1-failing-first.json). A passing
@@ -57,9 +58,9 @@ the next new connection; restart/pool recycling revalidates.
 
 C1's seven alternating batches measured create median **16.437 ms**, versus
 **5.536 ms** with the manifest disabled. C2 repeats seven alternating batches of
-50 writes: create median **5.362 ms**, with the historical per-write guard restored
-as a same-run control at **17.031 ms**. The fingerprint alone measured **4.416 ms**.
-This removes about **11.075 ms (67.4%)** versus C1's measured median and reaches
+50 writes: create median **5.803 ms**, with the historical per-write guard restored
+as a same-run control at **16.841 ms**. The fingerprint alone measured **4.409 ms**.
+This removes about **10.634 ms (64.7%)** versus C1's measured median and reaches
 the pre-C1 target. Network/database load changes these numbers. The historical
 [benchmark evidence](032-c1-baseline-benchmark.json) and new
 [C2 samples and method](032-c2-baseline-benchmark.json) retain every sample.

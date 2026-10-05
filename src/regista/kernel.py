@@ -1663,8 +1663,11 @@ class Kernel:
     def _require_writable_schema(self, conn: DictConn) -> None:
         """Check session namespace and version; baseline admission is per connection."""
         self._verify_namespace(conn)
-        row = conn.execute(SQL("SELECT kernel_schema_version FROM {}.kernel_meta").format(
-            Identifier(self._schema))).fetchone()
+        try:
+            row = conn.execute(SQL("SELECT kernel_schema_version FROM {}.kernel_meta").format(
+                Identifier(self._schema))).fetchone()
+        except psycopg.errors.UndefinedTable as exc:
+            raise UnsupportedSchemaError("kernel schema is not initialized for writing") from exc
         found = row["kernel_schema_version"] if row else None
         if found != KERNEL_SCHEMA_VERSION:
             raise UnsupportedSchemaError(

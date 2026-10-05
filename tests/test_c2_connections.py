@@ -141,3 +141,20 @@ def test_initialize_revalidates_live_connection(dsn: str, schema: str) -> None:
             handle.initialize()
     finally:
         handle.close()
+
+
+def test_write_before_initialization_preserves_schema_refusal(
+    dsn: str, schema: str, workflow: Workflow,
+) -> None:
+    handle = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+    try:
+        with pytest.raises(UnsupportedSchemaError, match="initialized"):
+            handle.register_workflow(workflow)
+        with psycopg.connect(dsn) as admin:
+            assert admin.execute("SELECT count(*) FROM pg_catalog.pg_class c "
+                                 "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                                 "WHERE n.nspname=%s", (schema,)).fetchone() == (0,)
+        handle.initialize()
+        assert handle.register_workflow(workflow) == 1
+    finally:
+        handle.close()
