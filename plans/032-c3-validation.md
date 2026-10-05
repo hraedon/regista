@@ -29,6 +29,7 @@ SHA pins. README, spec and operations identify the three tested versions.
 Risk: baseline admission affects persistent schemas and fresh installs. Work is
 isolated in `/projects/.worktrees/regista-f1b` on `feat/wi364-f1-promote`. Working
 set: kernel catalog query, C3 regression tests, CI admission test and CI matrix,
+pytest launcher/import configuration,
 mutation proof declaration, version guidance and Plan 032 qualification evidence.
 Tracker writes/claims and private provenance attachments are not authorized;
 none are asserted. This note records intent/evidence in the authorized repository.
@@ -96,3 +97,21 @@ The only authorized remote write is pushing `feat/wi364-f1-promote`. No tags,
 uploads, dispatches or settings changes are authorized or performed. C3 must not
 be called complete on local results alone; the final commit's CI run is awaited
 and every job's result reported separately before completion.
+
+## CI follow-up: pytest launcher path
+
+The first final-commit CI attempt was cancelled for seven jobs because GitHub
+could not acquire hosted runners. On retry, four jobs ran: Python 3.12/3.13/3.14
+on PostgreSQL 15 and Python 3.14 on 16. The three collation regressions passed;
+each suite reported `2 failed, 1003 passed, 67 subtests passed`. Both failures
+were the atomicity test's import of `scripts.qualify_distribution`: console
+`pytest` does not implicitly add the checkout root, unlike `python -m pytest`.
+The same two failures were reproduced locally with the console entry point.
+The pytest configuration now explicitly includes the checkout root, preserving
+the mutant source override inserted first by conftest. Targeted console tests
+passed (`5 passed`), and the full qualification is repeated with console pytest
+against all four servers before another branch push and final-commit CI.
+
+[Initial CI attempts](https://github.com/hraedon/regista/actions/runs/37366341468)
+are retained as failures, including the infrastructure cancellations; they are
+not substituted for the required green final-commit run.

@@ -61,7 +61,8 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "tests"]
+# Both the pytest console script and python -m pytest must find repository helpers.
+pythonpath = [".", "src", "tests"]
 addopts = "--strict-markers"
 
 [tool.ruff]
