@@ -110,6 +110,7 @@ def test_replay_clean_and_boundary(registered: Kernel, dsn: str, schema: str) ->
         "event payload hashes",
         "event chain links",
         "event sequence density",
+        "stored transition names against the pinned workflow version",
     )
     assert REPLAY_DOES_NOT_COVER == (
         "leases (claims)",

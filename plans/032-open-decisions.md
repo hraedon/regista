@@ -11,11 +11,12 @@ Review: [GPT-6's recommendations and measured caveats](032-open-decisions-review
 
 ## Rulings — 2026-09-17
 
-The maintainer ruled the four decisions below directly. Everything else is
+The maintainer ruled the original four decisions and the dated additions below
+directly. Other items are
 recorded as **adopted** (the decision list and the review concur, and the item
 is reversible) or **still open**. An adopted default is a working assumption
 that unblocked implementation, not a maintainer ruling; any of them can be
-reopened, and the two genuinely open items must not be defaulted.
+reopened, and open items must not be defaulted.
 
 | # | Ruling | Effect |
 | --- | --- | --- |
@@ -24,13 +25,23 @@ reopened, and the two genuinely open items must not be defaulted.
 | **D9** | **CAP NOW.** Executed 2026-09-17; the premise was two-thirds stale and the real exposure is elsewhere — see the correction below. | See "D9 as executed". |
 | **D13** | **KEEP `>=3.11`**, test 3.11–3.14. No speculative `<3.15` cap. | Plan 032 prefers retaining the advertised minimum; PyPA advises against speculative upper bounds, and a mismatched `Requires-Python` can make an installer resolve to an *older* regista release, which is the worst outcome across a scope break. The `fromisoformat` divergence is **not** addressed by narrowing — it was measured to sit inside the proposed 3.13/3.14 range too. The extracted kernel avoids it by parsing no timestamp strings at all. |
 
+
+### Further maintainer rulings — 2026-10-04 and 2026-10-05
+
+| # | Ruling | Effect |
+| --- | --- | --- |
+| **D4 — synchronous validators** (2026-10-05) | **RETIRED.** Reverses the adopted D4 default that kept trusted synchronous transition validation. | The kernel ships no validator/callback registry. Callers validate before calling `transition`; required-field, role and field-type validation remain in the kernel. No 0.8.0 consumer needs callbacks, and each would add a public API under the 90-day maintenance commitment. D4/D20 validator and callback assertions retire by this ruling. |
+| **Leases through transitions** (2026-10-05) | **RULED: retained until explicit release.** Upgrades the Stage A adopted default. | A documented behaviour change from 0.7. F4 must state it in current docs and list it as a breaking change in the changelog; callers explicitly release before handoff. |
+| **D11** (2026-10-04) | **90-day maintenance window from publication.** | F4 states the window, end date and reporting route. No indefinite maintenance commitment is implied. |
+| **D12** (2026-10-04) | **Yank older releases where possible, without blocking 0.8.0.** | The 0.8.0 release itself is the due diligence. Older-release yanking remains a separately authorized publication action; this ruling does not authorize a yank during F1. |
+
 **Adopted** (concurring recommendation, no dissent): D2 retire the in-memory
 backend *and* retarget its 35 conformance tests to PostgreSQL — the retargeting
 is part of the yes, not a follow-up; D3 remove the sidecar and its extra, by
 file deletion, since `packages = ["src/regista"]` has no exclude and
 `sidecar/__main__.py` is a live entry point; D4 remove recurrence, queued hooks
-and webhooks, while keeping trusted **synchronous** transition validation, which
-is a different responsibility from background delivery; D5 delete signing
+and webhooks. Its original synchronous-validation exception was **reversed by
+the 2026-10-05 maintainer ruling above**; D5 delete signing
 entirely; D7 keep shallow-merge field semantics but add one explicit atomic way
 to clear them — documentation alone leaves a caller able to learn that rejected
 data persists with no supported way to remove it; D10 `0.8.0`; D14 gates now;
@@ -99,12 +110,7 @@ regista dependency; `ad-steward`'s lock is gitignored entirely.
 - **D8** — the unfamiliar-reviewer walkthrough. Being measured now by two cold
   agents given the quickstart and a database and nothing else. This is the one
   F0a exit criterion that cannot be self-reported.
-- **D11** — the maintenance number. The review proposes 90 days from
-  publication, with the end date published and the route stated. Needs the
-  maintainer's figure before F4 documentation can be written.
-- **D12** — whether older releases are yanked. Unchanged: assess per published
-  version against reachable defects. Note that "nobody is using them" is now
-  weaker than it was, because D9 identified an internal installed consumer.
+D11 and D12 were ruled on 2026-10-04; see the dated ruling table above.
 
 ---
 
@@ -175,6 +181,10 @@ and rate limiting, pulls fastapi/uvicorn/pydantic/httpx. Not a thin pass-through
 **Recommendation: remove**, with its extra.
 
 ### D4. Recurrence, hooks, webhooks
+
+**2026-10-05 ruling:** synchronous transition validators are retired too. This
+reverses the adopted synchronous-validation exception; there is no callback
+registry. Callers validate first; kernel field and role checks remain.
 
 Execution concerns under Plan 032's own "not a job executor or scheduler."
 **Recommendation: remove.** One check first: `agent-wake` uses the hook queue as
@@ -255,15 +265,16 @@ closure." **Recommendation: 0.8.0**, confirm at release prep.
 Plan 032 F4 suggests "a 90-day stabilization window for release regressions and
 serious security/data-loss reports, without promised new features or an SLA." The
 maintainer chooses before publication; no indefinite commitment is assumed.
-**Needs your number.**
+**RULED 2026-10-04: 90 days from publication.** F4 publishes the end date and reporting route.
 
 ### D12. Do older releases get yanked?
 
 Plan 032 F5: "Do not automatically delete or yank older releases. Any such
 action needs an affected-version assessment and separate decision." Given the
 SEC-0x findings exist in published versions, this is a real question rather than
-a formality. **No recommendation** — it turns on whether anyone could be running
-them, and the working assumption is nobody is.
+a formality. **RULED 2026-10-04:** yank older releases where possible, but not as
+a blocker for 0.8.0; the 0.8.0 release itself is the due diligence. Separate
+authorization is still required before any yank action.
 
 ---
 
@@ -422,4 +433,13 @@ rulings. F1 Stage A2 records them to make the assertion ledger reviewable.
 | Actor-role registry (§B `TestConformanceActorRoles`) | retire | §1/§3: roles are caller-presented policy on a trusted host. |
 | `update_not_before` deferral (§B) | retire | Scheduling; D4. |
 | Nested JSON containment filter (§B) | retire | Keep table promises bounded filtering; kernel deliberately supports scalar equality only. |
-| Lease auto-release on transition (§B `test_claim_releases_on_transition`) | retire — **semantic change** | Kernel retains leases until explicit release; F0a handoff relies on it, F4 must state it, and the changelog must list the behaviour change. |
+| Lease auto-release on transition (§B `test_claim_releases_on_transition`) | superseded by **2026-10-05 maintainer ruling** | Former adopted default upgraded to a ruling: retain until explicit release; F4 docs and breaking-change changelog entry required. |
+
+| Cross-project links, value references and `content_hash` (`test_plan022.py`) | retire | Keep table scopes typed links to relationships between work items in one namespace; cross-project/value-reference machinery is outside that scope. |
+| Generic entity model and Event serialization (`test_plan022.py::TestEventDataclass`, entity-field classes, `test_bc306_entity_kind_validation.py`) | retire | The kernel coordinates work items only; generic `entity_kind` / `entity_id` / `effective_entity_id` served removed machinery. |
+| Plan 007 facade identity/legacy equality and old Event/Link result shapes (`test_plan007_facade.py`) | retire | D1 replaces the public API surface; facade and legacy result shapes are not carried over. |
+| Background maintenance lifecycle/health and Prometheus counters, including stolen claims (`test_plan009.py`, `test_bc184_bc185_metrics.py`, metric parts of `test_production_readiness.py`) | retire | Lease sweeps use explicit `expire_leases`; metrics export is outside the keep table. F4 explains how operators schedule sweeps. |
+| Whole-project event tail / JSON enumeration, time-range history filters and descending aggregate-history tie-breaks (`TestEventsTail`, `test_events_partition.py`, `test_read_events_conformance.py`) | retire | Keep table promises ordered per-item history. Bounded per-item prefix/suffix pagination is the retained replacement, not aggregate enumeration. |
+| Typed-link annotation/payload (`test_e2e.py` link reason data) | retire | Links describe relationships only; callers keep reasons in custom fields. |
+| Private `validate_field_update` on an undeclared type (`test_session13_regression.py`) | retire | Private API removed; public transition validation remains protected. |
+| Actor-metadata parameter, standalone metadata validator and link metadata (`test_wi234_actor_metadata_limit.py`) | retire API/result shape only | Kernel accepts no `actor_metadata` on create, transition or link and has no metadata validator. Generic size-cap intent is ported to supported fields and transition payloads with a 64 KiB UTF-8 JSON bound; absent link metadata and metadata result attributes are retired specifically. |

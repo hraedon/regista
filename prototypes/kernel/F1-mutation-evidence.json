@@ -1,5 +1,206 @@
 [
   {
+    "mutant": "namespace_name_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_namespace_name_limit_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_namespace_name_limit_a4"
+    ]
+  },
+  {
+    "mutant": "search_path_injection",
+    "file": "kernel.py",
+    "selection": "test_supplied_schema_cannot_redirect",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_supplied_schema_cannot_redirect"
+    ]
+  },
+  {
+    "mutant": "history_before_ignored_a4",
+    "file": "kernel.py",
+    "selection": "test_history_windows_a4[before_suffix]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_history_windows_a4[before_suffix]"
+    ]
+  },
+  {
+    "mutant": "history_before_inclusive_a4",
+    "file": "kernel.py",
+    "selection": "test_history_windows_a4[before_suffix]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_history_windows_a4[before_suffix]"
+    ]
+  },
+  {
+    "mutant": "history_newest_prefix_a4",
+    "file": "kernel.py",
+    "selection": "test_cli_history_window_a4[True]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_cli_history_window_a4[True]"
+    ]
+  },
+  {
+    "mutant": "history_suffix_descending_a4",
+    "file": "kernel.py",
+    "selection": "test_cli_history_window_a4[True]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_cli_history_window_a4[True]"
+    ]
+  },
+  {
+    "mutant": "history_cursor_refusal_removed_a4",
+    "file": "kernel.py",
+    "selection": "test_history_cursor_refusal_a4 and True",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_history_cursor_refusal_a4[before-True]",
+      "prototypes.kernel.tests.test_f1_a4::test_history_cursor_refusal_a4[after-True]"
+    ]
+  },
+  {
+    "mutant": "replay_transition_names_unchecked_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_transition_pin_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_transition_pin_a4[not_registered]",
+      "prototypes.kernel.tests.test_f1_a4::test_replay_transition_pin_a4[v2_only]"
+    ]
+  },
+  {
+    "mutant": "replay_transition_latest_version_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_transition_pin_a4[v2_only]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_transition_pin_a4[v2_only]"
+    ]
+  },
+  {
+    "mutant": "replay_unknown_is_drift_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_unknown_item_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_unknown_item_a4"
+    ]
+  },
+  {
+    "mutant": "namespace_only_first_page_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_namespace_a4[1]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[1]"
+    ]
+  },
+  {
+    "mutant": "namespace_skips_projection_only_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_namespace_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[1]",
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[2]",
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[50]"
+    ]
+  },
+  {
+    "mutant": "namespace_skips_orphans_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_namespace_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[1]",
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[2]",
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_a4[50]"
+    ]
+  },
+  {
+    "mutant": "namespace_materialized_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_namespace_memory_bound_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_namespace_memory_bound_a4"
+    ]
+  },
+  {
+    "mutant": "cli_namespace_drift_exit_zero_a4",
+    "file": "cli.py",
+    "selection": "test_cli_namespace_replay_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_cli_namespace_replay_a4[False]",
+      "prototypes.kernel.tests.test_f1_a4::test_cli_namespace_replay_a4[True]"
+    ]
+  },
+  {
+    "mutant": "json_size_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_json_input_limit_a4 and not 65536",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_json_input_limit_a4[65537-create]",
+      "prototypes.kernel.tests.test_f1_a4::test_json_input_limit_a4[65537-fields]",
+      "prototypes.kernel.tests.test_f1_a4::test_json_input_limit_a4[65537-payload]",
+      "prototypes.kernel.tests.test_f1_a4::test_json_input_limit_a4[70000-create]",
+      "prototypes.kernel.tests.test_f1_a4::test_json_input_limit_a4[70000-fields]",
+      "prototypes.kernel.tests.test_f1_a4::test_json_input_limit_a4[70000-payload]"
+    ]
+  },
+  {
+    "mutant": "merged_fields_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_input_limit_unicode_and_merge_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_input_limit_unicode_and_merge_a4"
+    ]
+  },
+  {
+    "mutant": "names_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_name_input_limit_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_name_input_limit_a4[actor]",
+      "prototypes.kernel.tests.test_f1_a4::test_name_input_limit_a4[claim_actor]",
+      "prototypes.kernel.tests.test_f1_a4::test_name_input_limit_a4[link]",
+      "prototypes.kernel.tests.test_f1_a4::test_name_input_limit_a4[workflow]",
+      "prototypes.kernel.tests.test_f1_a4::test_name_input_limit_a4[key]",
+      "prototypes.kernel.tests.test_f1_a4::test_name_input_limit_a4[role]"
+    ]
+  },
+  {
+    "mutant": "names_count_characters_a4",
+    "file": "kernel.py",
+    "selection": "test_name_utf8_limit_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_name_utf8_limit_a4"
+    ]
+  },
+  {
+    "mutant": "workflow_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_workflow_input_limit_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_workflow_input_limit_a4"
+    ]
+  },
+  {
+    "mutant": "unset_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_unset_input_limit_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_unset_input_limit_a4"
+    ]
+  },
+  {
+    "mutant": "replay_diagnostics_unbounded_a4",
+    "file": "kernel.py",
+    "selection": "test_replay_diagnostics_bounded_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_replay_diagnostics_bounded_a4"
+    ]
+  },
+  {
+    "mutant": "large_workflow_refusal_traceback_a4",
+    "file": "kernel.py",
+    "selection": "test_large_workflow_document_refuses_cleanly_a4",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a4::test_large_workflow_document_refuses_cleanly_a4"
+    ]
+  },
+  {
     "mutant": "cli_show_workflow_hidden",
     "file": "cli.py",
     "selection": "test_each_command[False-show]",
@@ -195,14 +396,6 @@
     "failed_nodes": [
       "prototypes.kernel.tests.test_f1_core::test_event_projection_atomicity[create]",
       "prototypes.kernel.tests.test_f1_core::test_event_projection_atomicity[transition]"
-    ]
-  },
-  {
-    "mutant": "search_path_injection",
-    "file": "kernel.py",
-    "selection": "test_supplied_schema_cannot_redirect",
-    "failed_nodes": [
-      "prototypes.kernel.tests.test_f1_namespace_workflows::test_supplied_schema_cannot_redirect"
     ]
   },
   {

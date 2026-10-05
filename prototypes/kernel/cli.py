@@ -299,7 +299,8 @@ def cmd_unlink(k: Kernel, args: argparse.Namespace) -> int:
 
 
 def cmd_history(k: Kernel, args: argparse.Namespace) -> int:
-    events = k.history(uuid.UUID(args.id), limit=args.limit, after=args.after)
+    events = k.history(uuid.UUID(args.id), limit=args.limit, after=args.after,
+                       before=args.before, newest=args.newest)
     out = [{"seq": e.seq, "actor": e.actor_id, "actor_kind": e.actor_kind,
             "transition": e.transition, "payload": e.payload,
             "occurred_at": e.occurred_at} for e in events]
@@ -309,13 +310,28 @@ def cmd_history(k: Kernel, args: argparse.Namespace) -> int:
             note = f"  (cleared {', '.join(cleared)})" if cleared else ""
             print(f"  {e.seq:>2}. {e.occurred_at:%Y-%m-%d %H:%M:%S}  "
                   f"{e.transition or 'created':<18} {e.actor_id} ({e.actor_kind}){note}")
-        _more(len(events), args.limit,
-              f"resume with --after {events[-1].seq}" if events else "")
+        resume = ""
+        if events:
+            resume = (f"resume with --before {events[0].seq}" if args.newest
+                      else f"resume with --after {events[-1].seq}")
+        _more(len(events), args.limit, resume)
     _emit(out, args.json)
     return 0
 
 
 def cmd_replay(k: Kernel, args: argparse.Namespace) -> int:
+    if args.id is None:
+        failed = False
+        for report in k.replay_all():
+            failed |= bool(report.drift)
+            if args.json:
+                print(json.dumps({"work_item_id": str(report.work_item_id),
+                                  "state": report.state, "fields": report.fields,
+                                  "drift": report.drift}, default=str))
+            else:
+                print(f"  {report.work_item_id}  state {report.state}  "
+                      f"drift {report.drift or 'none'}")
+        return 1 if failed else 0
     state, fields, drift = k.replay(uuid.UUID(args.id))
     if not args.json:
         print(f"  state  {state}")
@@ -504,7 +520,9 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--after", type=int, help="seq of the last event of the previous page")
 
     r = sub.add_parser("replay", help="rebuild state from events; exits 1 on drift")
-    r.add_argument("id")
+    h.add_argument("--before", type=int, help="exclusive upper sequence bound")
+    h.add_argument("--newest", action="store_true", help="select the newest matching suffix")
+    r.add_argument("id", nargs="?", help="omit to stream namespace replay (JSON Lines with --json)")
     return p
 
 

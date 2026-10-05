@@ -123,7 +123,7 @@ The rest of the CLI, for reference:
 | `list` | `--state --workflow --type --field k=v --available --owned ACTOR --limit --after` |
 | `list --blocked-by TYPE` | with `--direction {incoming,outgoing}` and `--satisfied STATE…` |
 | `show` / `lease` | one item; who holds its lease |
-| `history` | `--limit --after` |
+| `history` | `--limit --after --before --newest` |
 | `create` / `link` | file work; relate two items |
 | `claim` / `heartbeat` / `release` | hold a lease across steps |
 | `transition` | `--field` to set, `--unset-field` to clear |
@@ -131,7 +131,7 @@ The rest of the CLI, for reference:
 | `workflow validate --file` | check a document; **needs no database** |
 | `workflow register --file` | register one from YAML or JSON |
 | `workflow list` / `workflow show` | what states and transitions exist |
-| `replay` | rebuild from events; exits 1 on drift |
+| `replay [ID]` | one item or streamed namespace; exits 1 on drift |
 
 `--satisfied` is required on the CLI even though the library allows an empty
 set: at a terminal, an omission is far likelier than the intent.
@@ -517,3 +517,61 @@ require_existing=True)`. Missing, empty and unsupported schemas raise
 `UnsupportedSchemaError` without writes. The default opens a pool for the
 explicit `initialize()` sequence; it creates no namespace or tables on its own.
 All database CLI commands except `init` use the existing-project path.
+
+## Stage A4 retained contracts
+
+`history(id, *, after=None, before=None, newest=False, limit=50)` returns one
+page in ascending `event_seq` order (sequences start at zero). Both bounds are
+exclusive. The default selects the oldest matching prefix; `newest=True`
+selects the newest matching suffix. Resume forward with `after=page[-1].seq`,
+or backward with `before=page[0].seq`. Limits are 1–500. This extends the same
+keyset convention used by item queries and keeps suffix reads practical without
+loading earlier events. CLI: `history ID --before 30 --newest --limit 10`.
+
+`replay(id)` checks stored transition names against the item's pinned workflow
+version. Unknown names are drift. An ID with no projection or events raises
+`WorkItemNotFoundError`, also used by `get`. Event-only or projection-only damage
+is reported as drift. These are consistency checks within the trusted database
+boundary; existing `REPLAY_DOES_NOT_COVER` exclusions still apply. Replay does
+not revalidate historical caller roles or prove arbitrary workflow semantics.
+
+`replay_all(*, batch_size=50)` yields `ReplayResult(work_item_id, state, fields,
+drift)` for every namespace item in UUID order, including projection-only and
+event-only IDs. Client memory holds one ID page and one item's reduction.
+Diagnostics retain at most 100 messages plus an omitted count. Each item has its
+own repeatable-read snapshot; the namespace sweep is not an atomic snapshot.
+Run restore verification against a quiescent restored database. A concurrent
+insertion behind the UUID cursor appears on the next sweep. No connection is
+held while results are yielded, including if iteration stops early.
+
+CLI: `replay ID` checks one item; `replay` streams the namespace. `--json replay`
+emits one JSON object per line (JSON Lines), with no aggregate array held in
+memory. Exit 1 means at least one item has drift, 0 means the sweep was clean,
+and 2 means a typed refusal. An empty namespace emits no result lines.
+
+Free-form fields, final merged fields, transition payloads, `unset_fields` and
+scalar query probes are each limited to **64 KiB (65536 bytes)**, measured as
+compact UTF-8 JSON with no ASCII escaping; nesting is limited to 32 levels.
+Workflow definitions are limited to **256 KiB (262144 bytes)** using the same
+JSON measurement. Workflow/state/transition/type/role/link/actor names and
+idempotency keys are limited to **255 UTF-8 bytes**. Namespace/schema names
+are limited to **63 UTF-8 bytes** so PostgreSQL cannot silently truncate a
+long name and redirect the connection. Custom-field names share
+the field document's byte budget. Exact limits are accepted; larger values raise
+`InputTooLargeError` before persistent effects. Limit merged fields as well as
+individual updates so small writes cannot accumulate unbounded state. Store
+large documents elsewhere and keep references in fields.
+
+The kernel has no validator/callback registry or `actor_metadata` parameter.
+Callers validate before `transition`; built-in required-field, field-type and
+role checks remain. Links carry relationships only; callers keep reason data
+in custom fields. Maintenance is an explicit `expire_leases()` call, which an
+operator schedules from their own process or timer. The kernel owns no timer
+thread or Prometheus export.
+
+**Breaking behaviour from 0.7:** transitions retain the lease until explicit
+`release`, including terminal transitions. Release before handing work to a
+reviewer. The maintainer ruled this on 2026-10-05; the release's F4 changelog
+must list it as a breaking change. Synchronous validators were retired by a
+separate ruling on the same date. The maintenance window is 90 days from
+publication (2026-10-04 ruling); F4 will publish its end date and reporting route.

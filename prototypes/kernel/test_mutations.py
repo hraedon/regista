@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psycopg
 import yaml
 from kernel import (
+    DEFAULT_PAGE_LIMIT,
     REPLAY_COVERS,
     REPLAY_DOES_NOT_COVER,
     WORKFLOW_DOCUMENT_REMOVED_KEYS,
@@ -129,7 +130,7 @@ KERNEL_PUBLIC_SURFACE = frozenset({
     "claim", "heartbeat", "lease", "release", "expire_leases",
     "transition", "link", "remove_link", "links_from",
     "list_items", "available", "owned", "in_states", "blocked",
-    "history", "replay",
+    "history", "replay", "replay_all",
 })
 
 # connect() kept its call shape for every existing caller and deliberately added
@@ -2280,6 +2281,20 @@ $proof$;
             "list_workflows' cursor does not resume"
         )
 
+        reports = list(k.replay_all(batch_size=1))
+        assert [r.work_item_id for r in reports] == sorted([a.id, b.id, c.id])
+        assert all(not r.drift for r in reports)
+        expect(InvalidQueryError, lambda: list(k.replay_all(batch_size=0)),
+               "namespace replay with batch_size=0")
+        expect(InvalidQueryError, lambda: list(k.replay_all(batch_size=10_000)),
+               "namespace replay with an unbounded ID batch")
+        assert inspect.isgeneratorfunction(Kernel.replay_all), "namespace replay must stream"
+        replay_parameters = {
+            name: parameter.default
+            for name, parameter in inspect.signature(Kernel.replay_all).parameters.items()
+        }
+        assert replay_parameters == {"self": inspect.Parameter.empty,
+                                     "batch_size": DEFAULT_PAGE_LIMIT}
         public = {n for n in dir(Kernel) if not n.startswith("_")}
         assert public == KERNEL_PUBLIC_SURFACE, (
             "Kernel's public surface changed — added "

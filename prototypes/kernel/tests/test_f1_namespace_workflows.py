@@ -43,7 +43,7 @@ def test_namespace_isolation(
 
 def test_supplied_schema_cannot_redirect(registered: Kernel, dsn: str, schema: str) -> None:
     item = registered.create_work_item(workflow="review", type="task", actor_id="w")
-    malicious = Kernel.connect(dsn, schema=f"absent_{schema}, {schema}")
+    malicious = Kernel.connect(dsn, schema=f"absent, {schema}")
     try:
         with pytest.raises(DatabaseOperationError):
             malicious.initialize(str(ROOT / "schema.sql"))

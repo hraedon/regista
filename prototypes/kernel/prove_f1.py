@@ -55,9 +55,9 @@ def method_replace(name: str, before: str, after: str) -> Callable[[str], str]:
         lines = source.splitlines(keepends=True)
         end = node.end_lineno
         assert end is not None
-        segment = "".join(lines[node.lineno - 1:end])
+        segment = "".join(lines[node.lineno - 1 : end])
         changed = replace_once(before, after)(segment)
-        return "".join(lines[:node.lineno - 1]) + changed + "".join(lines[end:])
+        return "".join(lines[: node.lineno - 1]) + changed + "".join(lines[end:])
 
     return change
 
@@ -69,11 +69,11 @@ def fencing(source: str) -> str:
 
 
 def sequence_before_fencing(source: str) -> str:
-    start = source.index('            if expected_seq is not None and expected_seq !=')
-    end = source.index('            wf = self._read_workflow', start)
+    start = source.index("            if expected_seq is not None and expected_seq !=")
+    end = source.index("            wf = self._read_workflow", start)
     check = source[start:end]
     changed = source[:start] + source[end:]
-    barrier = changed.index('            # Lease fencing, before')
+    barrier = changed.index("            # Lease fencing, before")
     return changed[:barrier] + check + changed[barrier:]
 
 
@@ -103,21 +103,199 @@ def materialize(source: str) -> str:
     )
 
 
+def namespace_materialized(source: str) -> str:
+    source = method_replace(
+        "replay_all",
+        "        after: uuid.UUID | None = None",
+        "        reports: list[ReplayResult] = []\n        after: uuid.UUID | None = None",
+    )(source)
+    source = method_replace(
+        "replay_all",
+        "            if not ids:\n                return",
+        "            if not ids:\n                yield from reports\n                return",
+    )(source)
+    return method_replace(
+        "replay_all",
+        "yield ReplayResult(work_item_id, state, fields, drift)",
+        "reports.append(ReplayResult(work_item_id, state, fields, drift))",
+    )(source)
+
+
 # Each selector names assertions the corresponding defect MUST kill.
 MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
+    ("namespace_name_unbounded_a4", "kernel.py",
+     method_replace("connect", '        _check_name(schema, "schema", MAX_NAMESPACE_BYTES)',
+                    "        pass"), "test_namespace_name_limit_a4"),
     (
-        "cli_show_workflow_hidden", "cli.py",
-        replace_once('        print(f"  workflow {item.workflow_name} v{item.workflow_version}")',
-                     "        pass"),
+        "history_before_ignored_a4",
+        "kernel.py",
+        method_replace("history", "if before is not None:", "if False:"),
+        "test_history_windows_a4[before_suffix]",
+    ),
+    (
+        "history_before_inclusive_a4",
+        "kernel.py",
+        method_replace("history", "AND event_seq < %s", "AND event_seq <= %s"),
+        "test_history_windows_a4[before_suffix]",
+    ),
+    (
+        "history_newest_prefix_a4",
+        "kernel.py",
+        method_replace("history", "if newest:", "if False:"),
+        "test_cli_history_window_a4[True]",
+    ),
+    (
+        "history_suffix_descending_a4",
+        "kernel.py",
+        method_replace("history", "            rows.reverse()", "            pass"),
+        "test_cli_history_window_a4[True]",
+    ),
+    (
+        "history_cursor_refusal_removed_a4",
+        "kernel.py",
+        method_replace(
+            "history",
+            'raise InvalidQueryError(f"{label} must be a nonnegative integer sequence")',
+            "pass",
+        ),
+        "test_history_cursor_refusal_a4 and True",
+    ),
+    (
+        "replay_transition_names_unchecked_a4",
+        "kernel.py",
+        method_replace(
+            "replay", 'if wf is not None and r["transition"] not in wf.transitions:', "if False:"
+        ),
+        "test_replay_transition_pin_a4",
+    ),
+    (
+        "replay_transition_latest_version_a4",
+        "kernel.py",
+        method_replace("replay", 'projection["workflow_version"])', "None)"),
+        "test_replay_transition_pin_a4[v2_only]",
+    ),
+    (
+        "replay_unknown_is_drift_a4",
+        "kernel.py",
+        method_replace(
+            "replay",
+            'raise WorkItemNotFoundError(f"no such work item: {work_item_id}")',
+            'return ("", {}, ["no events"])',
+        ),
+        "test_replay_unknown_item_a4",
+    ),
+    (
+        "namespace_only_first_page_a4",
+        "kernel.py",
+        method_replace("replay_all", "            after = ids[-1]", "            return"),
+        "test_replay_namespace_a4[1]",
+    ),
+    (
+        "namespace_skips_projection_only_a4",
+        "kernel.py",
+        method_replace(
+            "_replay_ids",
+            "SELECT work_item_id FROM work_items_current ",
+            "SELECT work_item_id FROM events ",
+        ),
+        "test_replay_namespace_a4",
+    ),
+    (
+        "namespace_skips_orphans_a4",
+        "kernel.py",
+        method_replace(
+            "_replay_ids",
+            "UNION SELECT work_item_id FROM events",
+            "UNION SELECT work_item_id FROM work_items_current",
+        ),
+        "test_replay_namespace_a4",
+    ),
+    (
+        "namespace_materialized_a4",
+        "kernel.py",
+        namespace_materialized,
+        "test_replay_namespace_memory_bound_a4",
+    ),
+    (
+        "cli_namespace_drift_exit_zero_a4",
+        "cli.py",
+        replace_once("        return 1 if failed else 0", "        return 0"),
+        "test_cli_namespace_replay_a4",
+    ),
+    (
+        "json_size_unbounded_a4",
+        "kernel.py",
+        method_replace("_check_size", "if size > maximum:", "if False:"),
+        "test_json_input_limit_a4 and not 65536",
+    ),
+    (
+        "merged_fields_unbounded_a4",
+        "kernel.py",
+        method_replace(
+            "transition", '            _check_mapping(merged, "merged fields")', "            pass"
+        ),
+        "test_input_limit_unicode_and_merge_a4",
+    ),
+    ("names_unbounded_a4", "kernel.py", body("_check_name", "return"), "test_name_input_limit_a4"),
+    (
+        "names_count_characters_a4",
+        "kernel.py",
+        method_replace("_check_name", 'size = len(value.encode("utf-8"))', "size = len(value)"),
+        "test_name_utf8_limit_a4",
+    ),
+    (
+        "workflow_unbounded_a4",
+        "kernel.py",
+        method_replace(
+            "validate",
+            '        _check_size(self.as_json(), "workflow", MAX_WORKFLOW_BYTES)',
+            "        pass",
+        ),
+        "test_workflow_input_limit_a4",
+    ),
+    (
+        "unset_unbounded_a4",
+        "kernel.py",
+        method_replace(
+            "transition",
+            '        _check_size(list(unset), "unset_fields", MAX_JSON_BYTES)',
+            "        pass",
+        ),
+        "test_unset_input_limit_a4",
+    ),
+    (
+        "replay_diagnostics_unbounded_a4",
+        "kernel.py",
+        replace_once("MAX_REPLAY_DRIFT = 100", "MAX_REPLAY_DRIFT = 100000"),
+        "test_replay_diagnostics_bounded_a4",
+    ),
+    (
+        "large_workflow_refusal_traceback_a4",
+        "kernel.py",
+        replace_once(
+            "except (InvalidWorkflowError, InvalidFieldError) as e:",
+            "except InvalidWorkflowError as e:",
+        ),
+        "test_large_workflow_document_refuses_cleanly_a4",
+    ),
+    (
+        "cli_show_workflow_hidden",
+        "cli.py",
+        replace_once(
+            '        print(f"  workflow {item.workflow_name} v{item.workflow_version}")',
+            "        pass",
+        ),
         "test_each_command[False-show]",
     ),
     (
-        "cli_list_workflow_hidden", "cli.py",
+        "cli_list_workflow_hidden",
+        "cli.py",
         replace_once('f"{i.workflow_name} v{i.workflow_version}{mark}"', 'f"{mark}"'),
         "test_each_command[False-list]",
     ),
     (
-        "event_sequence_constraint_removed", "schema.sql",
+        "event_sequence_constraint_removed",
+        "schema.sql",
         replace_once(
             "occurred_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),\n"
             "    UNIQUE (work_item_id, event_seq)",
@@ -126,34 +304,42 @@ MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
         "test_event_sequence_constraint",
     ),
     (
-        "json_key_order_not_canonical", "kernel.py",
+        "json_key_order_not_canonical",
+        "kernel.py",
         replace_once("obj, sort_keys=True, separators=", "obj, sort_keys=False, separators="),
         "test_replay_key_order_is_irrelevant",
     ),
     (
-        "legacy_document_keys_accepted", "kernel.py",
+        "legacy_document_keys_accepted",
+        "kernel.py",
         body("validate_workflow_document", "return ()"),
         "test_legacy_document_keys_fail_closed",
     ),
     (
-        "history_order_reversed", "kernel.py",
-        replace_once('sql.append("ORDER BY event_seq LIMIT %s")',
-                     'sql.append("ORDER BY event_seq DESC LIMIT %s")'),
+        "history_order_reversed",
+        "kernel.py",
+        replace_once(
+            'sql.append("ORDER BY event_seq LIMIT %s")',
+            'sql.append("ORDER BY event_seq DESC LIMIT %s")',
+        ),
         "test_history_cursor_windows",
     ),
     (
-        "database_clock_replaced", "kernel.py",
+        "database_clock_replaced",
+        "kernel.py",
         body("_db_now", "return datetime.fromtimestamp(0).astimezone()"),
         "test_stamps_use_one_database_instant",
     ),
     (
-        "open_existing_gate_removed", "kernel.py",
+        "open_existing_gate_removed",
+        "kernel.py",
         replace_once("if require_existing:", "if False:"),
         "test_open_existing_refuses_without_writes",
     ),
     (
-        "cli_existing_gate_removed", "cli.py",
-        replace_once('require_existing=args.command != "init"', 'require_existing=False'),
+        "cli_existing_gate_removed",
+        "cli.py",
+        replace_once('require_existing=args.command != "init"', "require_existing=False"),
         "test_cli_inspection_requires_existing",
     ),
     ("lease_fencing", "kernel.py", fencing, "test_transition_fencing"),
@@ -604,11 +790,11 @@ MUTANTS.extend(
             "replay_resets_fencing",
             "kernel.py",
             replace_once(
-                '            )\n        return (state, fields, drift)\n',
-                '            )\n'
+                "            )\n        return (state, fields, drift)\n",
+                "            )\n"
                 '        self._conn.execute("UPDATE claim_attempts SET last_attempt=0")\n'
-                '        self._conn.commit()\n'
-                '        return (state, fields, drift)\n',
+                "        self._conn.commit()\n"
+                "        return (state, fields, drift)\n",
             ),
             "test_replay_clean_and_boundary",
         ),
@@ -650,11 +836,11 @@ MUTANTS.extend(
             "replay_writes",
             "kernel.py",
             replace_once(
-                '        self._conn.rollback()  # isolation applies to a fresh transaction',
+                "        self._conn.rollback()  # isolation applies to a fresh transaction",
                 '        self._conn.execute("UPDATE work_items_current SET '
                 'current_state=current_state")\n'
-                '        self._conn.commit()\n'
-                '        self._conn.rollback()  # isolation applies to a fresh transaction',
+                "        self._conn.commit()\n"
+                "        self._conn.rollback()  # isolation applies to a fresh transaction",
             ),
             "test_replay_read_only_no_temp_residue",
         ),
@@ -674,7 +860,8 @@ MUTANTS.extend(
 MUTANTS.extend(
     [
         (
-            "expected_sequence_gt", "kernel.py",
+            "expected_sequence_gt",
+            "kernel.py",
             replace_once(
                 'expected_seq != int(item["last_event_seq"])',
                 'expected_seq > int(item["last_event_seq"])',
@@ -682,29 +869,33 @@ MUTANTS.extend(
             "test_expected_sequence_stale_lower",
         ),
         (
-            "lease_subtype_erased", "kernel.py",
+            "lease_subtype_erased",
+            "kernel.py",
             lambda source: source.replace("return LeaseNotHeldError(", "return StaleAttemptError("),
             "test_transition_fencing[actor] or test_transition_fencing[released] "
             "or test_transition_fencing[swept] or test_heartbeat_refusals[actor]",
         ),
         (
-            "replay_chain_check_removed", "kernel.py",
+            "replay_chain_check_removed",
+            "kernel.py",
             replace_once("if stored != running:", "if False:"),
             "test_replay_detects_damage[chain] or test_cli_chain_break_nonzero",
         ),
         (
-            "inlock_retry_recheck_removed", "kernel.py",
+            "inlock_retry_recheck_removed",
+            "kernel.py",
             replace_once(
                 'self._transaction_lock(cur, "idempotency", idempotency_key)\n'
-                '                prior = self._idempotency_result('
-                'cur, idempotency_key, request_hash)',
+                "                prior = self._idempotency_result("
+                "cur, idempotency_key, request_hash)",
                 'self._transaction_lock(cur, "idempotency", idempotency_key)\n'
-                '                prior = None',
+                "                prior = None",
             ),
             "test_idempotency_recheck_under_item_lock",
         ),
         (
-            "single_sequence_number_skipped", "kernel.py",
+            "single_sequence_number_skipped",
+            "kernel.py",
             replace_once(
                 'seq = int(item["next_event_seq"])',
                 'seq = int(item["next_event_seq"]) + (int(item["next_event_seq"]) == 2)',
@@ -712,18 +903,23 @@ MUTANTS.extend(
             "test_concurrent_gap_free",
         ),
         (
-            "heartbeat_item_lock_removed", "kernel.py",
+            "heartbeat_item_lock_removed",
+            "kernel.py",
             method_replace("heartbeat", '"FOR UPDATE",', '"",'),
             "test_heartbeat_serializes_before_expiry_check",
         ),
         (
-            "public_writer_unclassified", "kernel.py",
-            lambda source: source + '\n    def unclassified_write(self):\n'
-            '        self._conn.execute("DELETE FROM claims")\n',
+            "public_writer_unclassified",
+            "kernel.py",
+            lambda source: (
+                source + "\n    def unclassified_write(self):\n"
+                '        self._conn.execute("DELETE FROM claims")\n'
+            ),
             "test_public_methods_declare_access_and_gate_writes",
         ),
         (
-            "public_writer_declared_read", "kernel.py",
+            "public_writer_declared_read",
+            "kernel.py",
             replace_once(
                 '@_pooled_operation(access="write")\n    def transition(',
                 '@_pooled_operation(access="read")\n    def transition(',
@@ -731,7 +927,8 @@ MUTANTS.extend(
             "test_public_methods_declare_access_and_gate_writes",
         ),
         (
-            "invalid_utf8_traceback_restored", "kernel.py",
+            "invalid_utf8_traceback_restored",
+            "kernel.py",
             replace_once(
                 "json.JSONDecodeError, UnicodeDecodeError, OSError",
                 "json.JSONDecodeError, OSError",
@@ -739,7 +936,9 @@ MUTANTS.extend(
             "test_cli_invalid_utf8_workflow",
         ),
         (
-            "sequence_before_lease_fencing", "kernel.py", sequence_before_fencing,
+            "sequence_before_lease_fencing",
+            "kernel.py",
+            sequence_before_fencing,
             "test_fencing_precedes_sequence",
         ),
     ]

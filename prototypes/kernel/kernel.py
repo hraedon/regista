@@ -164,7 +164,7 @@ import os
 import threading
 import uuid
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Concatenate, Literal, ParamSpec, TypeVar, cast
@@ -199,6 +199,11 @@ RESERVED_PAYLOAD_KEYS = frozenset({"from", "to", "fields", "unset", "created"})
 #: Guard against unbounded or self-referential field structures. json.dumps
 #: would hit the interpreter's recursion limit and raise something unhelpful.
 MAX_FIELD_DEPTH = 32
+MAX_JSON_BYTES = 64 * 1024
+MAX_WORKFLOW_BYTES = 256 * 1024
+MAX_NAME_BYTES = 255
+MAX_NAMESPACE_BYTES = 63
+MAX_REPLAY_DRIFT = 100
 
 #: Paging. Every collection query is bounded; see QUERIES in the module
 #: docstring. The ceiling exists so "give me everything" has to be spelled as
@@ -231,6 +236,7 @@ REPLAY_COVERS = (
     "event payload hashes",
     "event chain links",
     "event sequence density",
+    "stored transition names against the pinned workflow version",
 )
 
 #: Parts of the store replay() CANNOT reconcile, because nothing appends an
@@ -269,6 +275,8 @@ class StaleAttemptError(KernelError): ...
 class SequenceConflictError(KernelError): ...
 class InvalidFieldError(KernelError): ...
 class IdempotencyConflictError(KernelError): ...
+class WorkItemNotFoundError(KernelError): ...
+class InputTooLargeError(InvalidFieldError): ...
 
 
 class LeaseExpiredError(StaleAttemptError):
@@ -402,6 +410,35 @@ def _check_json(value: Any, path: str, depth: int = 0) -> None:
     )
 
 
+def _check_size(value: object, label: str, maximum: int) -> None:
+    size = 0
+    try:
+        for chunk in json.JSONEncoder(ensure_ascii=False, separators=(",", ":"),
+                                      allow_nan=False).iterencode(value):
+            size += len(chunk.encode("utf-8"))
+            if size > maximum:
+                raise InputTooLargeError(
+                    f"{label} exceeds maximum size of {maximum} UTF-8 JSON bytes"
+                )
+    except UnicodeError as exc:
+        raise InvalidFieldError(f"{label} must contain valid UTF-8 text") from exc
+
+
+def _check_name(
+    value: str | None, label: str, maximum: int = MAX_NAME_BYTES,
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str):
+        raise InvalidFieldError(f"{label} must be a string")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError as exc:
+        raise InvalidFieldError(f"{label} must contain valid UTF-8 text") from exc
+    if size > maximum:
+        raise InputTooLargeError(f"{label} exceeds maximum size of {maximum} UTF-8 bytes")
+
+
 def _check_mapping(obj: dict[str, Any] | None, label: str) -> None:
     for k, v in (obj or {}).items():
         if not isinstance(k, str):
@@ -409,6 +446,7 @@ def _check_mapping(obj: dict[str, Any] | None, label: str) -> None:
                 f"{label}: names must be strings, found {type(k).__name__} {k!r}"
             )
         _check_json(v, f"{label}.{k}")
+    _check_size(obj or {}, label, MAX_JSON_BYTES)
 
 
 def _check_limit(limit: int) -> int:
@@ -452,6 +490,7 @@ def _check_where_fields(where_fields: dict[str, Any] | None) -> dict[str, Any] |
                 "equality. Read the items and compare in your own code."
             )
         _check_json(value, f"where_fields.{key}")
+    _check_size(where_fields, "where_fields", MAX_JSON_BYTES)
     return dict(where_fields)
 
 
@@ -616,6 +655,15 @@ class Workflow:
     link_type_names: tuple[str, ...] | None = None
 
     def validate(self) -> None:
+        _check_json(self.as_json(), "workflow")
+        _check_size(self.as_json(), "workflow", MAX_WORKFLOW_BYTES)
+        for label, names in (
+            ("workflow name", (self.name,)), ("state", self.states),
+            ("work-item type", self.types), ("transition", tuple(self.transitions)),
+            ("role", self.role_names), ("link type", self.link_type_names or ()),
+        ):
+            for name in names:
+                _check_name(name, label)
         if self.version < 0:
             raise InvalidWorkflowError(
                 f"version {self.version} is negative. Leave version at 0 when defining a "
@@ -1012,7 +1060,7 @@ def validate_workflow_document(doc: object) -> tuple[str, ...]:
         return (f"state name(s) {repeated_states} appear more than once",)
     try:
         _build_workflow(doc).validate()
-    except InvalidWorkflowError as e:
+    except (InvalidWorkflowError, InvalidFieldError) as e:
         return (str(e),)
     return ()
 
@@ -1091,6 +1139,31 @@ class Event:
     occurred_at: datetime
 
 
+@dataclass(frozen=True)
+class ReplayResult:
+    work_item_id: uuid.UUID
+    state: str
+    fields: dict[str, Any]
+    drift: list[str]
+
+
+class _Drift(list[str]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.omitted = 0
+
+    def append(self, message: str) -> None:
+        if len(self) < MAX_REPLAY_DRIFT:
+            super().append(message)
+        else:
+            self.omitted += 1
+            summary = f"{self.omitted} additional drift diagnostics omitted"
+            if len(self) == MAX_REPLAY_DRIFT:
+                super().append(summary)
+            else:
+                self[-1] = summary
+
+
 class Kernel:
     """Coordination state over one PostgreSQL schema and a bounded connection pool.
 
@@ -1143,6 +1216,7 @@ class Kernel:
         The default remains a one-line replacement for the old single-connection
         API, so the CLI and examples need no lifecycle changes.
         """
+        _check_name(schema, "schema", MAX_NAMESPACE_BYTES)
         if pool_min_size < 0 or pool_max_size < 1 or pool_min_size > pool_max_size:
             raise PoolConfigurationError(
                 "pool bounds require 0 <= pool_min_size <= pool_max_size and "
@@ -1572,6 +1646,10 @@ class Kernel:
         fields: dict[str, Any] | None = None,
         workflow_version: int | None = None,
     ) -> WorkItem:
+        _check_name(actor_id, "actor_id")
+        _check_name(actor_kind, "actor_kind")
+        _check_name(workflow, "workflow")
+        _check_name(type, "type")
         fields = dict(fields or {})
         _check_mapping(fields, "fields")
         with self._conn.cursor() as cur:
@@ -1620,7 +1698,7 @@ class Kernel:
             row = cur.fetchone()
         self._end_read()
         if not row:
-            raise KernelError(f"no such work item: {work_item_id}")
+            raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
         return WorkItem(
             row["work_item_id"], row["workflow_name"], row["workflow_version"],
             row["work_item_type"], row["current_state"], row["custom_fields"],
@@ -1666,6 +1744,7 @@ class Kernel:
         self, work_item_id: uuid.UUID, *, actor_id: str, ttl_seconds: float = 300
     ) -> Claim:
         """Acquire a lease, taking over an expired one. Refuses a live foreign lease."""
+        _check_name(actor_id, "actor_id")
         _check_ttl(ttl_seconds)
         with self._conn.cursor() as cur:
             cur.execute(
@@ -1674,7 +1753,7 @@ class Kernel:
             )
             if not cur.fetchone():
                 self._conn.rollback()
-                raise KernelError(f"no such work item: {work_item_id}")
+                raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
             # clock_timestamp(), evaluated after the row lock is held: see ONE
             # CLOCK. now() here would be the clock as of before any lock wait.
             cur.execute(
@@ -1741,6 +1820,7 @@ class Kernel:
 
             k.heartbeat(c.work_item_id, actor_id=c.actor_id, attempt=c.attempt)
         """
+        _check_name(actor_id, "actor_id")
         _check_ttl(ttl_seconds)
         with self._conn.cursor() as cur:
             # Serialize on the same row claim() and transition() lock, in the same
@@ -1757,7 +1837,7 @@ class Kernel:
             )
             if not cur.fetchone():
                 self._conn.rollback()
-                raise KernelError(f"no such work item: {work_item_id}")
+                raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
             cur.execute(
                 "UPDATE claims SET expires_at = clock_timestamp() + make_interval(secs => %s) "
                 "WHERE work_item_id = %s AND actor_id = %s AND attempt_number = %s "
@@ -1824,6 +1904,7 @@ class Kernel:
 
     @_pooled_operation(access="write")
     def release(self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int) -> None:
+        _check_name(actor_id, "actor_id")
         """Release a lease. Takes the primitive rather than a Claim, so a CLI
         holding only (id, actor, attempt) can call it without fabricating one.
 
@@ -1868,7 +1949,7 @@ class Kernel:
             row = cur.fetchone()
         self._end_read()
         if row is None:
-            raise KernelError(f"no such work item: {work_item_id}")
+            raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
         if row["actor_id"] is None:
             return None
         return Claim(work_item_id, row["actor_id"], int(row["attempt_number"]),
@@ -2015,6 +2096,10 @@ class Kernel:
         `payload` is free-form annotation recorded on the event. It obeys the
         FIELD TYPES contract and may not contain a reserved key.
         """
+        for label, value in (("actor_id", actor_id), ("actor_kind", actor_kind),
+                             ("transition", transition), ("role", role),
+                             ("idempotency_key", idempotency_key)):
+            _check_name(value, label)
         fields = dict(fields or {})
         payload = dict(payload or {})
         unset = tuple(unset_fields)
@@ -2026,6 +2111,7 @@ class Kernel:
                     f"unset_fields: names must be strings, found "
                     f"{type(name).__name__} {name!r}"
                 )
+        _check_size(list(unset), "unset_fields", MAX_JSON_BYTES)
         contradictory = sorted(set(unset) & set(fields))
         if contradictory:
             raise InvalidFieldError(
@@ -2065,7 +2151,7 @@ class Kernel:
             item = cur.fetchone()
             if not item:
                 self._conn.rollback()
-                raise KernelError(f"no such work item: {work_item_id}")
+                raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
 
             if idempotency_key is not None:
                 # The fast check above avoids locking on ordinary retries. This
@@ -2156,6 +2242,7 @@ class Kernel:
             merged.update(fields)
             for name in unset:
                 merged.pop(name, None)
+            _check_mapping(merged, "merged fields")
             self._validate_fields(cur, wf, item["work_item_type"], merged)
             required = wf.required_fields.get(transition, ())
             missing = [f for f in required if f not in merged]
@@ -2255,6 +2342,7 @@ class Kernel:
 
     @_pooled_operation(access="write")
     def link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
+        _check_name(link_type, "link_type")
         if source == target:
             raise InvalidFieldError("a work item cannot link to itself")
         with self._conn.cursor() as cur:
@@ -2279,6 +2367,7 @@ class Kernel:
     @_pooled_operation(access="write")
     def remove_link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
         """Remove an explicit relationship; refuse an absent one. Outside replay."""
+        _check_name(link_type, "link_type")
         with self._conn.cursor() as cur:
             cur.execute("DELETE FROM links WHERE source_id = %s AND target_id = %s "
                         "AND link_type = %s", (source, target, link_type))
@@ -2579,33 +2668,82 @@ class Kernel:
     @_pooled_operation(access="read")
     def history(
         self, work_item_id: uuid.UUID, *, limit: int = DEFAULT_PAGE_LIMIT,
-        after: int | None = None,
+        after: int | None = None, before: int | None = None, newest: bool = False,
     ) -> list[Event]:
-        """One page of this item's events, oldest first.
+        """One bounded page, always ascending by event_seq.
 
-        event_seq is dense from 0 and unique per item, so it is both the order
-        and the cursor: `after` is the seq of the last event you saw. A full
-        page means there may be more. replay() does its own unbounded read of
-        one item's events on purpose -- it cannot reconcile a partial history --
-        which is why this one is free to be bounded.
+        after and before are exclusive sequence bounds. Default pages select the
+        oldest matching prefix; newest=True selects the newest matching suffix.
+        Resume a suffix with before=page[0].seq, a prefix with after=page[-1].seq.
+        A full page means more may exist. Sequence cursors share the query API's
+        after convention; neither timestamps nor offsets are needed.
         """
         _check_limit(limit)
+        for label, cursor in (("after", after), ("before", before)):
+            if cursor is not None and (type(cursor) is not int or cursor < 0):
+                raise InvalidQueryError(f"{label} must be a nonnegative integer sequence")
         sql = ["SELECT * FROM events WHERE work_item_id = %s"]
         args: list[Any] = [work_item_id]
         if after is not None:
             sql.append("AND event_seq > %s")
-            args.append(int(after))
-        sql.append("ORDER BY event_seq LIMIT %s")
+            args.append(after)
+        if before is not None:
+            sql.append("AND event_seq < %s")
+            args.append(before)
+        if newest:
+            sql.append("ORDER BY event_seq DESC LIMIT %s")
+        else:
+            sql.append("ORDER BY event_seq LIMIT %s")
         args.append(limit)
         with self._conn.cursor() as cur:
             cur.execute(" ".join(sql), args)
             rows = cur.fetchall()
         self._end_read()
+        if newest:
+            rows.reverse()
         return [
             Event(r["event_seq"], r["actor_id"], r["actor_kind"], r["transition"],
                   r["payload"], r["occurred_at"])
             for r in rows
         ]
+
+    @_lifecycle_operation
+    def replay_all(
+        self, *, batch_size: int = DEFAULT_PAGE_LIMIT,
+    ) -> Generator[ReplayResult, None, None]:
+        """Stream every namespace item, ordered by UUID, with bounded client memory.
+
+        Includes projection-only and event-only IDs. Each item's replay has its
+        own repeatable-read snapshot; the namespace sweep is not one atomic
+        snapshot. Run restore verification on a quiescent restored database.
+        No connection is held while a result is yielded, including on early
+        abandonment. Concurrent insertions behind the UUID cursor wait for the
+        next sweep. Memory holds one ID page and one item's reduction, with
+        drift diagnostics capped at MAX_REPLAY_DRIFT plus an omission summary.
+        """
+        _check_limit(batch_size)
+        after: uuid.UUID | None = None
+        while True:
+            ids = self._replay_ids(after, batch_size)
+            if not ids:
+                return
+            for work_item_id in ids:
+                state, fields, drift = self.replay(work_item_id)
+                yield ReplayResult(work_item_id, state, fields, drift)
+            after = ids[-1]
+
+    @_pooled_operation(access="read")
+    def _replay_ids(self, after: uuid.UUID | None, limit: int) -> list[uuid.UUID]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT work_item_id FROM (SELECT work_item_id FROM work_items_current "
+                "UNION SELECT work_item_id FROM events) AS ids "
+                "WHERE (%s::uuid IS NULL OR work_item_id > %s) "
+                "ORDER BY work_item_id LIMIT %s", (after, after, limit),
+            )
+            ids = [r["work_item_id"] for r in cur.fetchall()]
+        self._end_read()
+        return ids
 
     @_pooled_operation(access="read")
     def replay(self, work_item_id: uuid.UUID) -> tuple[str, dict[str, Any], list[str]]:
@@ -2646,11 +2784,22 @@ class Kernel:
             with self._conn.cursor() as cur:
                 cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                 cur.execute(
-                    "SELECT current_state, custom_fields, last_event_seq "
+                    "SELECT current_state, custom_fields, last_event_seq, "
+                    "workflow_name, workflow_version "
                     "FROM work_items_current WHERE work_item_id = %s",
                     (work_item_id,),
                 )
                 projection = cur.fetchone()
+                wf: Workflow | None = None
+                workflow_drift: str | None = None
+                if projection is not None:
+                    try:
+                        wf = self._read_workflow(cur, projection["workflow_name"],
+                                                 projection["workflow_version"])
+                    except InvalidWorkflowError:
+                        workflow_drift = (
+                            "pinned workflow version is missing; transition names unchecked"
+                        )
             with self._conn.cursor(name="kernel_replay") as rows:
                 rows.itersize = 64
                 rows.execute(
@@ -2658,7 +2807,9 @@ class Kernel:
                     "FROM events WHERE work_item_id = %s ORDER BY event_seq",
                     (work_item_id,),
                 )
-                drift: list[str] = []
+                drift: list[str] = _Drift()
+                if workflow_drift:
+                    drift.append(workflow_drift)
                 state: str = ""
                 fields: dict[str, Any] = {}
                 running: bytes | None = None
@@ -2678,6 +2829,9 @@ class Kernel:
                         state = created.get("state", "")
                         fields = dict(created.get("fields", {}))
                     else:
+                        if wf is not None and r["transition"] not in wf.transitions:
+                            drift.append(f"event {seq}: unknown transition {r['transition']!r} "
+                                         f"for {wf.name} v{wf.version}")
                         if payload.get("from") != state:
                             drift.append(
                                 f"event {seq} leaves {payload.get('from')!r} "
@@ -2704,6 +2858,8 @@ class Kernel:
         finally:
             self._end_read()
         if last_seq == -1:
+            if projection is None:
+                raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
             return ("", {}, ["no events"])
 
         if projection is None:
