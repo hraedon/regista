@@ -121,10 +121,9 @@ allow eight scalar equality predicates. See the
 ## Maintenance and reporting
 
 The maintainer provides a **90-day stabilization window from publication** for
-release regressions and serious security or data-loss reports. The publication
-date and resulting end date will be recorded in the release notes when 0.8.0 is
-published; the window has not started for this candidate. There are no promised
-new features and no SLA.
+release regressions and serious security or data-loss reports. 0.8.0 was
+published on **2026-10-05**, so the window runs to **2027-01-03**. There are no
+promised new features and no SLA.
 
 Report regressions and usage feedback through
 [GitHub issues](https://github.com/hraedon/regista/issues).
