@@ -204,6 +204,7 @@ MAX_WORKFLOW_BYTES = 256 * 1024
 MAX_NAME_BYTES = 255
 MAX_NAMESPACE_BYTES = 63
 MAX_REPLAY_DRIFT = 100
+MAX_QUERY_NAMES = 500
 
 #: Paging. Every collection query is bounded; see QUERIES in the module
 #: docstring. The ceiling exists so "give me everything" has to be spelled as
@@ -317,7 +318,8 @@ def _pooled_operation(
 
     initialize owns the fresh-destination admission check because an empty schema
     has no version marker yet. Every public method must declare its access; the
-    protection suite checks declarations and follows SQL writes through helpers.
+    protection suite checks declarations. Reads run in PostgreSQL read-only
+    transactions, including transactions restarted by a method or helper.
     """
     def decorate(
         method: Callable[Concatenate[Kernel, P], R],
@@ -334,6 +336,7 @@ def _pooled_operation(
             try:
                 conn = self._acquire_connection()
                 try:
+                    conn.read_only = access == "read"
                     self._begin_operation(conn)
                     self._operation_local.conn = conn
                     if access == "write":
@@ -343,6 +346,8 @@ def _pooled_operation(
                     if getattr(self._operation_local, "conn", None) is conn:
                         del self._operation_local.conn
                     self._clean_connection(conn)
+                    if not conn.closed:
+                        conn.read_only = False
                     self._pool.putconn(conn)
             except KernelError:
                 raise
@@ -354,6 +359,7 @@ def _pooled_operation(
 
         setattr(wrapped, "_kernel_access", access)
         setattr(wrapped, "_kernel_schema_gated", access == "write")
+        setattr(wrapped, "_kernel_read_only", access == "read")
         return cast("Callable[Concatenate[Kernel, P], R]", wrapped)
 
     return decorate
@@ -655,15 +661,18 @@ class Workflow:
     link_type_names: tuple[str, ...] | None = None
 
     def validate(self) -> None:
-        _check_json(self.as_json(), "workflow")
-        _check_size(self.as_json(), "workflow", MAX_WORKFLOW_BYTES)
-        for label, names in (
-            ("workflow name", (self.name,)), ("state", self.states),
-            ("work-item type", self.types), ("transition", tuple(self.transitions)),
-            ("role", self.role_names), ("link type", self.link_type_names or ()),
-        ):
-            for name in names:
-                _check_name(name, label)
+        try:
+            _check_json(self.as_json(), "workflow")
+            _check_size(self.as_json(), "workflow", MAX_WORKFLOW_BYTES)
+            for label, names in (
+                ("workflow name", (self.name,)), ("state", self.states),
+                ("work-item type", self.types), ("transition", tuple(self.transitions)),
+                ("role", self.role_names), ("link type", self.link_type_names or ()),
+            ):
+                for name in names:
+                    _check_name(name, label)
+        except InvalidFieldError as exc:
+            raise InvalidWorkflowError(str(exc)) from exc
         if self.version < 0:
             raise InvalidWorkflowError(
                 f"version {self.version} is negative. Leave version at 0 when defining a "
@@ -1014,6 +1023,11 @@ def validate_workflow_document(doc: object) -> tuple[str, ...]:
     from_document wants to stop at the first. Pure -- no database, no registry,
     no I/O beyond the schema file.
     """
+    try:
+        _check_json(doc, "workflow document")
+        _check_size(doc, "workflow document", MAX_WORKFLOW_BYTES)
+    except InvalidFieldError as exc:
+        return (str(exc),)
     if not isinstance(doc, dict):
         return (
             f"a workflow document must be a mapping, found {type(doc).__name__}. "
@@ -1065,6 +1079,27 @@ def validate_workflow_document(doc: object) -> tuple[str, ...]:
     return ()
 
 
+def parse_workflow_document(text: str, *, format: str = "yaml") -> Any:
+    """Parse bounded UTF-8 text; YAML anchors and aliases are unsupported.
+
+    Check raw bytes before parsing. Refusing sharing syntax before construction
+    prevents both cyclic documents and exponential alias expansion in validation.
+    """
+    try:
+        if len(text.encode("utf-8")) > MAX_WORKFLOW_BYTES:
+            raise InvalidWorkflowError(f"workflow exceeds {MAX_WORKFLOW_BYTES} raw UTF-8 bytes")
+        if format == "json":
+            return json.loads(text)
+        if format not in ("yaml", "yml"):
+            raise InvalidWorkflowError(f"unsupported workflow format: {format!r}")
+        for token in yaml.scan(text):
+            if isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):
+                raise InvalidWorkflowError("workflow YAML anchors and aliases are unsupported")
+        return yaml.load(text, Loader=_NoDuplicateKeyLoader)
+    except (yaml.YAMLError, json.JSONDecodeError, UnicodeError, ValueError, RecursionError) as exc:
+        raise InvalidWorkflowError(f"cannot parse workflow ({type(exc).__name__})") from exc
+
+
 def load_workflow_document(path: str) -> Any:
     """Parse a workflow document from .yaml, .yml or .json. No validation."""
     ext = os.path.splitext(path)[1].lower()
@@ -1075,10 +1110,11 @@ def load_workflow_document(path: str) -> Any:
             "same bytes mean different things on different days."
         )
     try:
-        with open(path, encoding="utf-8") as fh:
-            if ext == ".json":
-                return json.load(fh)
-            return yaml.load(fh, Loader=_NoDuplicateKeyLoader)
+        with open(path, "rb") as fh:
+            raw = fh.read(MAX_WORKFLOW_BYTES + 1)
+        if len(raw) > MAX_WORKFLOW_BYTES:
+            raise InvalidWorkflowError(f"workflow exceeds {MAX_WORKFLOW_BYTES} raw UTF-8 bytes")
+        return parse_workflow_document(raw.decode("utf-8"), format=ext[1:])
     except (yaml.YAMLError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise InvalidWorkflowError(f"{path}: cannot load workflow ({type(exc).__name__})") from exc
 
@@ -1147,6 +1183,27 @@ class ReplayResult:
     drift: list[str]
 
 
+def _validate_event_payload(payload: Any, *, creation: bool) -> None:
+    """Stored JSON is untrusted, even when its hash was recomputed."""
+    _check_json(payload, "event payload")
+    if not isinstance(payload, dict):
+        raise InvalidFieldError("payload must be an object")
+    body = payload.get("created") if creation else payload
+    if not isinstance(body, dict):
+        raise InvalidFieldError("created must be an object")
+    names = ("workflow", "type", "state") if creation else ("from", "to")
+    for name in names:
+        if not isinstance(body.get(name), str) or not body[name]:
+            raise InvalidFieldError(f"{name} must be a nonempty string")
+    if creation and (type(body.get("version")) is not int or body["version"] < 1):
+        raise InvalidFieldError("version must be a positive integer")
+    if not isinstance(body.get("fields"), dict):
+        raise InvalidFieldError("fields must be an object")
+    unset = payload.get("unset", [])
+    if not isinstance(unset, list) or any(not isinstance(n, str) for n in unset):
+        raise InvalidFieldError("unset must be a list of strings")
+
+
 class _Drift(list[str]):
     def __init__(self) -> None:
         super().__init__()
@@ -1162,6 +1219,18 @@ class _Drift(list[str]):
                 super().append(summary)
             else:
                 self[-1] = summary
+
+    def important(self, message: str) -> None:
+        """Reserve visible space for projection summaries, even after overflow."""
+        if len(self) >= MAX_REPLAY_DRIFT:
+            self.pop(MAX_REPLAY_DRIFT - 1)
+            self.omitted += 1
+            if len(self) == MAX_REPLAY_DRIFT - 1:
+                super().append("")
+            self[-1] = f"{self.omitted} additional drift diagnostics omitted"
+            self.insert(0, message)
+        else:
+            self.insert(0, message)
 
 
 class Kernel:
@@ -1206,8 +1275,9 @@ class Kernel:
     ) -> Kernel:
         """Open a bounded pool for one project schema.
 
-        ``require_existing=True`` refuses missing, empty or unsupported schemas
-        without writes. Use it when opening an existing project. The default
+        ``require_existing=True`` refuses missing or empty schemas without writes.
+        Unsupported versions remain open for diagnostics; writes refuse them.
+        Use it when opening an existing project. The default
         only opens the pool, permitting explicit initialize() on an empty
         destination; connect() itself never creates a schema or tables.
 
@@ -1303,7 +1373,12 @@ class Kernel:
 
     @_pooled_operation(access="read")
     def _check_existing_schema(self) -> None:
-        self._require_writable_schema(self._conn)
+        try:
+            row = self._conn.execute("SELECT kernel_schema_version FROM kernel_meta").fetchone()
+        except psycopg.errors.UndefinedTable as exc:
+            raise UnsupportedSchemaError("kernel schema is not initialized for reading") from exc
+        if row is None:
+            raise UnsupportedSchemaError("kernel schema has no version marker for reading")
         self._end_read()
 
     @_lifecycle_operation
@@ -1557,6 +1632,7 @@ class Kernel:
 
     @_pooled_operation(access="read")
     def get_workflow(self, name: str, version: int | None = None) -> Workflow:
+        _check_name(name, "workflow")
         with self._conn.cursor() as cur:
             try:
                 wf = self._read_workflow(cur, name, version)
@@ -1578,6 +1654,7 @@ class Kernel:
         sql = ["SELECT workflow_name, version, registered_at FROM workflow_registry"]
         args: list[Any] = []
         if after is not None:
+            _check_name(after[0], "after workflow")
             sql.append("WHERE (workflow_name, version) > (%s, %s)")
             args += [after[0], int(after[1])]
         sql.append("ORDER BY workflow_name, version LIMIT %s")
@@ -1645,14 +1722,34 @@ class Kernel:
         actor_kind: str = "agent",
         fields: dict[str, Any] | None = None,
         workflow_version: int | None = None,
+        idempotency_key: str | None = None,
     ) -> WorkItem:
+        """Create once when given a key; identical retries return the original item.
+
+        Create and transition share the schema's key namespace. The create hash
+        includes the operation, workflow, requested version (including None for
+        latest), type, actor identity/kind and fields. An unpinned retry still
+        returns its original version after a new workflow version is registered.
+        Conflicting reuse refuses before any effects.
+        """
         _check_name(actor_id, "actor_id")
         _check_name(actor_kind, "actor_kind")
         _check_name(workflow, "workflow")
         _check_name(type, "type")
+        _check_name(idempotency_key, "idempotency_key")
         fields = dict(fields or {})
         _check_mapping(fields, "fields")
+        request_hash = _hash(_canonical({
+            "operation": "create", "workflow": workflow, "workflow_version": workflow_version,
+            "type": type, "actor_id": actor_id, "actor_kind": actor_kind, "fields": fields,
+        }))
         with self._conn.cursor() as cur:
+            if idempotency_key is not None:
+                self._transaction_lock(cur, "idempotency", idempotency_key)
+                prior = self._idempotency_result(cur, idempotency_key, request_hash)
+                if prior is not None:
+                    self._conn.rollback()
+                    return prior
             wf = self._read_workflow(cur, workflow, workflow_version)
             if type not in wf.types:
                 self._conn.rollback()
@@ -1679,13 +1776,19 @@ class Kernel:
                 "INSERT INTO claim_attempts (work_item_id, last_attempt) VALUES (%s, 0)",
                 (item_id,),
             )
-            self._append_event(
+            event_id = self._append_event(
                 cur, item_id, seq=0, actor_id=actor_id, actor_kind=actor_kind,
                 transition=None,
                 payload={"created": {"workflow": wf.name, "version": wf.version,
                                      "type": type, "state": wf.initial, "fields": fields}},
                 occurred_at=now,
             )
+            if idempotency_key is not None:
+                cur.execute(
+                    "INSERT INTO idempotency_keys (idempotency_key, work_item_id, event_id, "
+                    "request_hash) VALUES (%s, %s, %s, %s)",
+                    (idempotency_key, item_id, event_id, request_hash),
+                )
         self._conn.commit()
         return WorkItem(item_id, wf.name, wf.version, type, wf.initial, fields, 0)
 
@@ -1904,7 +2007,6 @@ class Kernel:
 
     @_pooled_operation(access="write")
     def release(self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int) -> None:
-        _check_name(actor_id, "actor_id")
         """Release a lease. Takes the primitive rather than a Claim, so a CLI
         holding only (id, actor, attempt) can call it without fabricating one.
 
@@ -1912,6 +2014,7 @@ class Kernel:
         refusal: release is cleanup, and cleanup that raises makes callers wrap
         it in a bare except.
         """
+        _check_name(actor_id, "actor_id")
         with self._conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s "
@@ -1984,7 +2087,7 @@ class Kernel:
     ) -> WorkItem | None:
         """Return the result originally recorded for a key, or refuse reuse.
 
-        The stored event id identifies the transition's exact result. Replaying
+        The stored event id identifies the operation's exact result. Replaying
         only through that event avoids returning a later writer's state as if
         it were the result of this request.
         """
@@ -2027,6 +2130,7 @@ class Kernel:
         fields: dict[str, Any] = {}
         for row in rows:
             event_payload = row["payload"]
+            _validate_event_payload(event_payload, creation=row["transition"] is None)
             if row["transition"] is None:
                 created = event_payload.get("created", {})
                 state = created.get("state", "")
@@ -2388,6 +2492,9 @@ class Kernel:
         order, which is the ORDERING key, not the returned tuple's order.
         """
         _check_limit(limit)
+        _check_name(link_type, "link_type")
+        if after is not None:
+            _check_name(after[0], "after link_type")
         sql = ["SELECT target_id, link_type FROM links WHERE source_id = %s"]
         args: list[Any] = [source]
         if link_type is not None:
@@ -2460,6 +2567,7 @@ class Kernel:
     ) -> list[WorkItem]:
         """Items under a LIVE lease held by this actor. See lease() to ask the
         question the other way round -- who holds a given item."""
+        _check_name(actor_id, "actor_id")
         return self._item_page(
             join="JOIN claims c USING (work_item_id)",
             where=["AND c.actor_id = %s", "AND c.expires_at > clock_timestamp()"],
@@ -2538,6 +2646,7 @@ class Kernel:
         as a state the workflow itself enforces.
         """
         _check_direction(direction)
+        _check_name(link_type, "link_type")
         if direction == "incoming":
             exists = (
                 "AND EXISTS (SELECT 1 FROM links l "
@@ -2575,6 +2684,14 @@ class Kernel:
         rather than a property each query has to remember to have.
         """
         _check_limit(limit)
+        _check_name(workflow, "workflow")
+        _check_name(type, "type")
+        for label, names in (("states", states), ("satisfied_states", check_states)):
+            if len(names) > MAX_QUERY_NAMES:
+                raise InputTooLargeError(f"{label} exceeds maximum of {MAX_QUERY_NAMES} names")
+            _check_size(list(names), label, MAX_JSON_BYTES)
+            for name in names:
+                _check_name(name, label)
         probe = _check_where_fields(where_fields)
         sql = ["SELECT w.* FROM work_items_current w"]
         if join:
@@ -2679,6 +2796,8 @@ class Kernel:
         after convention; neither timestamps nor offsets are needed.
         """
         _check_limit(limit)
+        if type(newest) is not bool:
+            raise InvalidQueryError("newest must be a bool")
         for label, cursor in (("after", after), ("before", before)):
             if cursor is not None and (type(cursor) is not int or cursor < 0):
                 raise InvalidQueryError(f"{label} must be a nonnegative integer sequence")
@@ -2696,6 +2815,10 @@ class Kernel:
             sql.append("ORDER BY event_seq LIMIT %s")
         args.append(limit)
         with self._conn.cursor() as cur:
+            if cur.execute("SELECT 1 FROM work_items_current WHERE work_item_id = %s "
+                           "UNION SELECT 1 FROM events WHERE work_item_id = %s LIMIT 1",
+                           (work_item_id, work_item_id)).fetchone() is None:
+                raise WorkItemNotFoundError(f"no such work item: {work_item_id}")
             cur.execute(" ".join(sql), args)
             rows = cur.fetchall()
         self._end_read()
@@ -2728,7 +2851,10 @@ class Kernel:
             if not ids:
                 return
             for work_item_id in ids:
-                state, fields, drift = self.replay(work_item_id)
+                try:
+                    state, fields, drift = self.replay(work_item_id)
+                except KernelError as exc:
+                    state, fields, drift = "", {}, [f"replay refused: {exc}"]
                 yield ReplayResult(work_item_id, state, fields, drift)
             after = ids[-1]
 
@@ -2796,9 +2922,10 @@ class Kernel:
                     try:
                         wf = self._read_workflow(cur, projection["workflow_name"],
                                                  projection["workflow_version"])
-                    except InvalidWorkflowError:
+                    except (KernelError, TypeError, ValueError, KeyError, AttributeError):
                         workflow_drift = (
-                            "pinned workflow version is missing; transition names unchecked"
+                            "pinned workflow version is missing or malformed; "
+                            "transition names unchecked"
                         )
             with self._conn.cursor(name="kernel_replay") as rows:
                 rows.itersize = 64
@@ -2807,7 +2934,7 @@ class Kernel:
                     "FROM events WHERE work_item_id = %s ORDER BY event_seq",
                     (work_item_id,),
                 )
-                drift: list[str] = _Drift()
+                drift = _Drift()
                 if workflow_drift:
                     drift.append(workflow_drift)
                 state: str = ""
@@ -2824,6 +2951,24 @@ class Kernel:
                     payload = r["payload"]
                     if seq != i:
                         drift.append(f"sequence gap: expected {i}, found {seq}")
+
+                    # Chain verification is independent of whether the reducer
+                    # can use this payload. Keep checking the remaining events.
+                    try:
+                        if bytes(r["payload_hash"]) != _hash(_canonical(payload)):
+                            drift.append(f"event {seq}: payload does not match its hash")
+                    except (TypeError, ValueError, OverflowError, RecursionError):
+                        drift.append(f"event {seq}: payload cannot be hashed")
+                    stored = (bytes(r["prev_event_hash"])
+                              if r["prev_event_hash"] is not None else None)
+                    if stored != running:
+                        drift.append(f"event {seq}: chain link does not match predecessor")
+                    running = _hash(bytes(r["payload_hash"]), bytes(stored or b""))
+                    try:
+                        _validate_event_payload(payload, creation=r["transition"] is None)
+                    except InvalidFieldError as exc:
+                        drift.append(f"event {seq}: malformed payload: {exc}")
+                        continue
                     if r["transition"] is None:
                         created = payload.get("created", {})
                         state = created.get("state", "")
@@ -2846,15 +2991,13 @@ class Kernel:
                         for cleared in payload.get("unset", ()):
                             fields.pop(cleared, None)
 
-                    # Chain check. Consistency only -- see the module docstring.
-                    if bytes(r["payload_hash"]) != _hash(_canonical(payload)):
-                        drift.append(f"event {seq}: payload does not match its hash")
-                    stored = (bytes(r["prev_event_hash"])
-                              if r["prev_event_hash"] is not None else None)
-                    if stored != running:
-                        drift.append(f"event {seq}: chain link does not match predecessor")
-                    running = _hash(bytes(r["payload_hash"]), bytes(stored or b""))
-
+        except (
+            TypeError, ValueError, OverflowError, RecursionError, KeyError, AttributeError,
+        ) as exc:
+            # psycopg's JSON decoder can fail before yielding a row (for example,
+            # a JSON integer beyond Python's digit bound or excessive nesting).
+            # This item is unreadable, but other namespace items remain useful.
+            return ("", {}, [f"malformed stored replay data ({type(exc).__name__})"])
         finally:
             self._end_read()
         if last_seq == -1:
@@ -2863,24 +3006,27 @@ class Kernel:
             return ("", {}, ["no events"])
 
         if projection is None:
-            drift.append("the projection row is missing, but events exist for this item")
+            drift.important("the projection row is missing, but events exist for this item")
             return (state, fields, drift)
 
         if projection["current_state"] != state:
-            drift.append(
+            drift.important(
                 f"projection says {projection['current_state']!r}, replay says {state!r}"
             )
         if projection["custom_fields"] != fields:
-            only_proj = {k: v for k, v in projection["custom_fields"].items()
+            projection_fields = projection["custom_fields"]
+            if not isinstance(projection_fields, dict):
+                projection_fields = {"(malformed projection)": projection_fields}
+            only_proj = {k: v for k, v in projection_fields.items()
                          if k not in fields or fields[k] != v}
             only_replay = {k: v for k, v in fields.items()
-                           if k not in projection["custom_fields"]
-                           or projection["custom_fields"][k] != v}
-            drift.append(
+                           if k not in projection_fields
+                           or projection_fields[k] != v}
+            drift.important(
                 f"fields disagree: projection has {only_proj!r}, replay has {only_replay!r}"
             )
         if int(projection["last_event_seq"]) != last_seq:
-            drift.append(
+            drift.important(
                 f"projection's last_event_seq is {projection['last_event_seq']}, but the "
                 f"final event in the history is {last_seq} (the history is truncated, "
                 "or an event was written without updating the projection)"

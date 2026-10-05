@@ -277,7 +277,8 @@ def test_name_input_limit_a4(registered: Kernel, workflow: Workflow, entry: str)
     before = registered.get(first)
     with pytest.raises(KernelError, match="255") as exc:
         actions[entry]()
-    assert type(exc.value).__name__ == "InputTooLargeError"
+    expected = "InvalidWorkflowError" if entry == "workflow" else "InputTooLargeError"
+    assert type(exc.value).__name__ == expected
     assert registered.get(first) == before
     assert registered.lease(first) is None
     assert registered.links_from(first) == []
@@ -293,7 +294,7 @@ def test_workflow_input_limit_a4(registered: Kernel, workflow: Workflow) -> None
     )
     with pytest.raises(KernelError, match="262144") as exc:
         registered.register_workflow(huge)
-    assert type(exc.value).__name__ == "InputTooLargeError"
+    assert type(exc.value).__name__ == "InvalidWorkflowError"
     assert registered.register_workflow(workflow) == 1
 
 

@@ -15,6 +15,7 @@ from kernel import (
     Kernel,
     UnsupportedSchemaError,
     Workflow,
+    WorkItemNotFoundError,
     load_workflow,
     validate_workflow_document,
 )
@@ -36,7 +37,8 @@ def test_namespace_isolation(
         assert registered.list_items() == [a] and sibling.list_items() == [b]
         registered.transition(a.id, transition="start", actor_id="w")
         assert sibling.get(b.id) == b and sibling.replay(b.id) == ("new", {}, [])
-        assert registered.history(b.id) == []
+        with pytest.raises(WorkItemNotFoundError):
+            registered.history(b.id)
     finally:
         sibling.close()
 

@@ -8,7 +8,7 @@ from typing import Any
 
 import psycopg
 import pytest
-from kernel import InvalidFieldError, Kernel, Workflow
+from kernel import InvalidFieldError, Kernel, Workflow, WorkItemNotFoundError
 from psycopg.sql import SQL, Identifier
 
 
@@ -25,7 +25,8 @@ def test_history_cursor_windows(registered: Kernel) -> None:
     assert [[e.seq for e in p] for p in pages] == [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11], []]
     assert registered.history(made.id, after=11) == []
     assert registered.history(made.id, after=0, limit=100) == history[1:]
-    assert registered.history(uuid.uuid4()) == []
+    with pytest.raises(WorkItemNotFoundError):
+        registered.history(uuid.uuid4())
 
 
 def test_generic_review_note_and_mixed_actors(kernel: Kernel, workflow: Workflow) -> None:

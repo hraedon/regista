@@ -131,6 +131,7 @@ def cmd_create(k: Kernel, args: argparse.Namespace) -> int:
     item = k.create_work_item(
         workflow=args.workflow, type=args.type, actor_id=args.actor,
         actor_kind=args.actor_kind, fields=_fields(args.field),
+        idempotency_key=args.idempotency_key,
     )
     if not args.json:
         print(f"{item.id}  {item.state}")
@@ -441,6 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--actor", required=True)
     c.add_argument("--actor-kind", default="agent", choices=["agent", "human", "system"])
     c.add_argument("--field", action="append", help="key=value, repeatable")
+    c.add_argument("--idempotency-key")
 
     s = sub.add_parser("show", help="show one work item")
     s.add_argument("id")

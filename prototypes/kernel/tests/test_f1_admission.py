@@ -82,6 +82,8 @@ def test_public_methods_declare_access_and_gate_writes() -> None:
         assert access in {"read", "write", "initialize", "lifecycle"}, name
         if writes(name):
             assert access in {"write", "initialize"}, f"{name} reaches persistent SQL writes"
+        if access == "read":
+            assert getattr(method, "_kernel_read_only", False), name
         if access == "write":
             assert getattr(method, "_kernel_schema_gated", False), name
         if access == "initialize":
