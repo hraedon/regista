@@ -40,6 +40,7 @@ import tomllib
 import unicodedata
 import urllib.request
 import zipfile
+import zlib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -694,6 +695,36 @@ def sdist_file(blob: bytes, rel: str) -> bytes | None:
 _SDIST_PACKAGE_DIRS = ("src/regista/",)
 
 
+def _sdist_tar(blob: bytes, where: str) -> bytes:
+    """Exactly one ordinary gzip member, containing one canonical tar envelope."""
+    if len(blob) < 18 or blob[:4] != b"\x1f\x8b\x08\x00":
+        raise GuardError(f"{where}: noncanonical gzip header")
+    decoder = zlib.decompressobj(31)
+    try:
+        raw = decoder.decompress(blob) + decoder.flush()
+    except zlib.error as exc:
+        raise GuardError(f"{where}: invalid gzip member") from exc
+    if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise GuardError(f"{where}: gzip must contain exactly one complete member and no trailer")
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
+        end = 0
+        for member in tf.getmembers():
+            if member.offset != end or member.offset_data != end + 512:
+                raise GuardError(f"{where}: unexpected header outside the tar envelope")
+            end = member.offset_data + ((member.size + 511) // 512) * 512
+            if any(raw[member.offset_data + member.size:end]):
+                raise GuardError(f"{where}: nonzero file padding in tar envelope")
+            if raw[member.offset:member.offset_data] != member.tobuf(format=tarfile.USTAR_FORMAT):
+                raise GuardError(f"{where}: noncanonical tar envelope header")
+            if member.uid or member.gid or member.uname or member.gname:
+                raise GuardError(f"{where}: unexpected ownership fields in tar envelope")
+        # Two zero end-of-archive blocks followed only by the required record padding.
+        expected_length = ((end + 1024 + 10239) // 10240) * 10240
+        if len(raw) != expected_length or any(raw[end:]):
+            raise GuardError(f"{where}: bytes outside the canonical tar envelope")
+    return raw
+
+
 def _read_sdist(
     blob: bytes,
     where: str,
@@ -704,7 +735,7 @@ def _read_sdist(
     out: dict[str, str] = {}
     if (repo_root is None) != (tracked is None):
         raise GuardError(f"{where}: reviewed-tree arguments are incomplete")
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+    with tarfile.open(fileobj=io.BytesIO(_sdist_tar(blob, where)), mode="r:") as tf:
         members = tf.getmembers()
         if tf.pax_headers or any(m.pax_headers for m in members):
             raise GuardError(f"{where}: PAX extended headers can rename members; refused")
@@ -712,10 +743,16 @@ def _read_sdist(
         if len(roots) != 1 or any("/" not in m.name for m in members):
             raise GuardError(f"{where}: expected one top-level directory, found {sorted(roots)}")
         root = next(iter(roots))
-        if repo_root is not None:
-            pkg_info = [m.name for m in members if m.name == f"{root}/PKG-INFO"]
-            if len(pkg_info) != 1:
-                raise GuardError(f"{where}: PKG-INFO must exist exactly once")
+        pkg_info = [m for m in members if m.name == f"{root}/PKG-INFO"]
+        if len(pkg_info) != 1 or not pkg_info[0].isfile():
+            raise GuardError(f"{where}: PKG-INFO must exist exactly once as a regular file")
+        fh = tf.extractfile(pkg_info[0])
+        assert fh is not None
+        name, version = _metadata_identity(fh.read(), f"{where}: PKG-INFO")
+        expected_root = f"{_normalize_distribution(name)}-{version}"
+        if root != expected_root or (where.endswith(".tar.gz") and
+                                    Path(where).name != expected_root + ".tar.gz"):
+            raise GuardError(f"{where}: sdist root/name/version differ from PKG-INFO")
         _check_names(
             [m.name for m in members],
             where,
@@ -1010,6 +1047,15 @@ def check_dist(
             expected,
             sdist.name,
         )
+        pkg_info = sdist_file(blob, "PKG-INFO")
+        for whl in wheels:
+            with zipfile.ZipFile(whl) as archive:
+                metadata_name = next(n for n in archive.namelist()
+                                     if n.endswith(".dist-info/METADATA"))
+                if pkg_info != archive.read(metadata_name):
+                    raise GuardError(
+                        f"{sdist.name}: PKG-INFO differs byte-for-byte from wheel METADATA"
+                    )
         # The installer's build of this sdist runs ITS pyproject.toml. Require it
         # to be the reviewed one, byte for byte, with no extra hatch config file.
         if sdist_file(blob, "pyproject.toml") != pyproject:

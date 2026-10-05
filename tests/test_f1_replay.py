@@ -111,7 +111,7 @@ def test_replay_clean_and_boundary(registered: Kernel, dsn: str, schema: str) ->
         "event payload hashes",
         "event chain links",
         "event sequence density",
-        "stored transition names against the pinned workflow version",
+        "stored transition names and source/destination rules against the pinned workflow version",
     )
     assert REPLAY_DOES_NOT_COVER == (
         "leases (claims)",
@@ -189,7 +189,8 @@ def test_replay_repeatable_snapshot(registered: Kernel, dsn: str, schema: str) -
                 # A concurrent consistent edit. The snapshot must still see x=2.
                 payload = {"from": "doing", "to": "doing", "fields": {"x": 999}}
                 digest = hashlib.sha256(
-                    json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                    json.dumps({"transition": "edit", "payload": payload},
+                               sort_keys=True, separators=(",", ":")).encode()
                 ).digest()
                 admin.execute(
                     "UPDATE events SET payload=%s, payload_hash=%s "

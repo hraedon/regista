@@ -220,6 +220,16 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.14"
+      - name: Candidate is merged into approved main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Identifier gate (fails closed without configured identifiers)
+        env:
+          REGISTA_FORBIDDEN_IDENTIFIERS: ${{ secrets.REGISTA_FORBIDDEN_IDENTIFIERS }}
+        run: |
+          test -n "$REGISTA_FORBIDDEN_IDENTIFIERS"
+          python scripts/check_committed_identifiers.py
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -259,6 +269,10 @@ jobs:
         with:
           python-version: "3.14"   # check-dist rebuilds each sdist with pip too
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          version: "0.12.23"
+          architecture: "x86_64"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
       - name: Build
         run: uv build
       # #65: judge the exact bytes about to be uploaded against the allowlist,
@@ -271,7 +285,7 @@ jobs:
             GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
             python3 scripts/check_published_migrations.py check-dist --authoritative dist
       - name: Check distribution metadata
-        run: uvx twine check dist/*
+        run: uvx --from twine==6.2.0 twine check dist/*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist
@@ -286,6 +300,10 @@ jobs:
       id-token: write   # (A) Trusted Publishing OIDC — remove if using (B)
     steps:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          version: "0.12.23"
+          architecture: "x86_64"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist

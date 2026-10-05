@@ -13,7 +13,13 @@ from regista import Kernel
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_readme_quickstart(dsn: str, schema: str) -> None:
+def test_readme_quickstart(dsn: str, absent_schema: str) -> None:
+    schema = absent_schema
+    import psycopg
+
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute("SELECT 1 FROM pg_namespace WHERE nspname=%s",
+                            (schema,)).fetchone() is None
     readme = (ROOT / "README.md").read_text()
     snippet = readme.split("```python\n", 1)[1].split("```", 1)[0]
     assert snippet == (ROOT / "examples/quickstart.py").read_text()
@@ -55,3 +61,22 @@ def test_retired_workflow_guidance_matches_rulings() -> None:
     assert "validators are retired" in hook
     links = WORKFLOW_DOCUMENT_REMOVED_KEYS["document"]["link_types"]
     assert "link_type_names" in links
+
+
+def test_c1_inventory_and_historical_checklist() -> None:
+    breaking = (ROOT / "docs/breaking-0.8.md").read_text()
+    for name in ("ErrorCode", "RegistaError", "ConnectionInfo", "REGISTA_VERSION", "config",
+                 "schema init", "schema status", "schema repair-checksums", "recurrence due"):
+        assert f"`{name}`" in breaking
+    assert "historical" in (ROOT / "docs/publication-review-checklist.md").read_text()[:250].lower()
+    assert "governs repository publication" not in (ROOT / "docs/README.md").read_text()
+
+
+def test_c1_blocked_explanation() -> None:
+    assert "blocker is itself blocked is not reported" not in Kernel.blocked.__doc__
+    assert "immediate counterpart" in Kernel.blocked.__doc__
+
+
+def test_mechanical_removal_inventory_is_current() -> None:
+    subprocess.run([sys.executable, str(ROOT / "scripts/generate_removal_inventory.py"), "--check"],
+                   cwd=ROOT, check=True)

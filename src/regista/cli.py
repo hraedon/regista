@@ -34,11 +34,12 @@ import json
 import os
 import sys
 import uuid
-from typing import Any
+from typing import Any, NoReturn
 
 from . import (
     DEFAULT_PAGE_LIMIT,
     Claim,
+    InvalidFieldError,
     InvalidWorkflowError,
     Kernel,
     KernelError,
@@ -51,6 +52,45 @@ from . import (
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _escape_human(value: object) -> str:
+    """Render caller/stored values without terminal, line or bidi controls."""
+    out: list[str] = []
+    for char in str(value):
+        code = ord(char)
+        if code < 0x20 or 0x7f <= code <= 0x9f or code in {
+            0x061c, 0x200e, 0x200f, 0x2028, 0x2029,
+            0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+            0x2066, 0x2067, 0x2068, 0x2069,
+        }:
+            out.append({10: r"\n", 13: r"\r", 9: r"\t"}.get(
+                code, f"\\u{code:04x}"))
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _human(value: object, *, file: Any = None) -> None:
+    print(_escape_human(value), file=file)
+
+
+class _RefusalParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise InvalidFieldError(message)
+
+
+def _uuid(value: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a UUID") from exc
+
+
+def _refusal(error: KernelError, as_json: bool) -> int:
+    _human(f"refused: {error}", file=sys.stderr)
+    _emit({"error": type(error).__name__, "message": str(error), "exit_code": 2}, as_json)
+    return 2
+
+
 def _more(shown: int, limit: int, resume: str) -> None:
     """Say so when a page is full, instead of letting a bound look like the end.
 
@@ -58,7 +98,7 @@ def _more(shown: int, limit: int, resume: str) -> None:
     listing that hides leased items: the answer looks complete and is not.
     """
     if shown >= limit:
-        print(f"  … {limit} shown (the page limit); more may exist — {resume}")
+        _human(f"  … {limit} shown (the page limit); more may exist — {resume}")
 
 
 def _fields(pairs: list[str] | None) -> dict[str, Any]:
@@ -66,12 +106,14 @@ def _fields(pairs: list[str] | None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for p in pairs or []:
         if "=" not in p:
-            raise SystemExit(f"--field expects key=value, got {p!r}")
+            raise InvalidFieldError(f"--field expects key=value, got {p!r}")
         k, v = p.split("=", 1)
         try:
             out[k] = json.loads(v)
         except json.JSONDecodeError:
             out[k] = v
+        except (ValueError, RecursionError) as exc:
+            raise InvalidFieldError("--field JSON exceeds parser limits") from exc
     return out
 
 
@@ -90,7 +132,7 @@ def _emit(obj: Any, as_json: bool) -> None:
 def cmd_init(k: Kernel, args: argparse.Namespace) -> int:
     k.initialize()
     if not args.json:
-        print(f"initialised schema {args.schema!r}")
+        _human(f"initialised schema {args.schema!r}")
     _emit({"schema": args.schema, "status": "ready"}, args.json)
     return 0
 
@@ -99,7 +141,7 @@ def cmd_health(k: Kernel, args: argparse.Namespace) -> int:
     state = k.health()
     if not args.json:
         for key, val in state.items():
-            print(f"  {key:<16} {val}")
+            _human(f"  {key:<16} {val}")
     _emit(state, args.json)
     return 0
 
@@ -110,7 +152,7 @@ def cmd_workflow_register(k: Kernel, args: argparse.Namespace) -> int:
     wf = load_workflow(args.file)
     version = k.register_workflow(wf)
     if not args.json:
-        print(f"{wf.name} registered at version {version}")
+        _human(f"{wf.name} registered at version {version}")
     _emit({"workflow": wf.name, "version": version}, args.json)
     return 0
 
@@ -120,7 +162,7 @@ def cmd_workflow_list(k: Kernel, args: argparse.Namespace) -> int:
            for n, v, at in k.list_workflows()]
     if not args.json:
         for r in out:
-            print(f"  {r['name']:<24} v{r['version']}")
+            _human(f"  {r['name']:<24} v{r['version']}")
     _emit(out, args.json)
     return 0
 
@@ -132,13 +174,13 @@ def cmd_create(k: Kernel, args: argparse.Namespace) -> int:
         idempotency_key=args.idempotency_key,
     )
     if not args.json:
-        print(f"{item.id}  {item.state}")
+        _human(f"{item.id}  {item.state}")
     _emit({"id": str(item.id), "state": item.state, "fields": item.fields}, args.json)
     return 0
 
 
 def cmd_show(k: Kernel, args: argparse.Namespace) -> int:
-    item = k.get(uuid.UUID(args.id))
+    item = k.get(args.id)
     links = k.links_from(item.id)
     held = k.lease(item.id)
     lease: dict[str, Any] | None = None
@@ -150,15 +192,15 @@ def cmd_show(k: Kernel, args: argparse.Namespace) -> int:
             "last_event_seq": item.last_event_seq, "lease": lease,
             "links": [{"target": str(t), "type": lt} for t, lt in links]}
     if not args.json:
-        print(f"  id      {item.id}")
-        print(f"  workflow {item.workflow_name} v{item.workflow_version}")
-        print(f"  state   {item.state}")
-        print(f"  type    {item.type}")
-        print(f"  lease   {_lease_line(held)}")
+        _human(f"  id      {item.id}")
+        _human(f"  workflow {item.workflow_name} v{item.workflow_version}")
+        _human(f"  state   {item.state}")
+        _human(f"  type    {item.type}")
+        _human(f"  lease   {_lease_line(held)}")
         for key, val in sorted(item.fields.items()):
-            print(f"  · {key:<14} {val}")
+            _human(f"  · {key:<14} {val}")
         for t, lt in links:
-            print(f"  -> {lt}: {t}")
+            _human(f"  -> {lt}: {t}")
     _emit(body, args.json)
     return 0
 
@@ -176,7 +218,7 @@ def _lease_line(held: Claim | None) -> str:
 
 def cmd_list(k: Kernel, args: argparse.Namespace) -> int:
     states = tuple(args.state or ())
-    after = uuid.UUID(args.after) if args.after else None
+    after = args.after if args.after else None
     where = _fields(args.field) or None
     common: dict[str, Any] = {
         "workflow": args.workflow, "type": args.type, "where_fields": where,
@@ -192,7 +234,7 @@ def cmd_list(k: Kernel, args: argparse.Namespace) -> int:
             # counts as satisfied"). At a terminal, an omitted --satisfied is
             # far likelier to be a forgotten argument than that intent, and the
             # result — every linked item reported as blocked — looks plausible.
-            raise SystemExit(
+            raise InvalidFieldError(
                 "--blocked-by needs at least one --satisfied STATE: which counterpart "
                 "states mean 'no longer blocking'. A terminal state is not automatically "
                 "one of them — a rejected blocker is terminal and still unsatisfied. "
@@ -221,19 +263,19 @@ def cmd_list(k: Kernel, args: argparse.Namespace) -> int:
                 f"  [leased by {held.actor_id}]" if held.live
                 else f"  [lease EXPIRED, held by {held.actor_id}]"
             )
-            print(f"  {i.id}  {i.state:<18} {i.type}  "
+            _human(f"  {i.id}  {i.state:<18} {i.type}  "
                   f"{i.workflow_name} v{i.workflow_version}{mark}")
         if not items:
-            print("  (none)")
+            _human("  (none)")
         _more(len(items), args.limit, f"resume with --after {items[-1].id}" if items else "")
     _emit(out, args.json)
     return 0
 
 
 def cmd_claim(k: Kernel, args: argparse.Namespace) -> int:
-    c = k.claim(uuid.UUID(args.id), actor_id=args.actor, ttl_seconds=args.ttl)
+    c = k.claim(args.id, actor_id=args.actor, ttl_seconds=args.ttl)
     if not args.json:
-        print(f"attempt {c.attempt}, expires {c.expires_at:%Y-%m-%d %H:%M:%S%z}")
+        _human(f"attempt {c.attempt}, expires {c.expires_at:%Y-%m-%d %H:%M:%S%z}")
     _emit({"attempt": c.attempt, "expires_at": c.expires_at}, args.json)
     return 0
 
@@ -242,18 +284,18 @@ def cmd_heartbeat(k: Kernel, args: argparse.Namespace) -> int:
     """Extend a live lease. Without this, a person driving work through the CLI
     could take a lease in one invocation and had no way to keep it across the
     next few — the lease would die mid-task and refuse the write at the end."""
-    c = k.heartbeat(uuid.UUID(args.id), actor_id=args.actor, attempt=args.attempt,
+    c = k.heartbeat(args.id, actor_id=args.actor, attempt=args.attempt,
                     ttl_seconds=args.ttl)
     if not args.json:
-        print(f"attempt {c.attempt} extended, expires {c.expires_at:%Y-%m-%d %H:%M:%S%z}")
+        _human(f"attempt {c.attempt} extended, expires {c.expires_at:%Y-%m-%d %H:%M:%S%z}")
     _emit({"attempt": c.attempt, "expires_at": c.expires_at, "live": c.live}, args.json)
     return 0
 
 
 def cmd_lease(k: Kernel, args: argparse.Namespace) -> int:
-    held = k.lease(uuid.UUID(args.id))
+    held = k.lease(args.id)
     if not args.json:
-        print(f"  {_lease_line(held)}")
+        _human(f"  {_lease_line(held)}")
     _emit(None if held is None else
           {"actor": held.actor_id, "attempt": held.attempt,
            "expires_at": held.expires_at, "live": held.live}, args.json)
@@ -261,44 +303,44 @@ def cmd_lease(k: Kernel, args: argparse.Namespace) -> int:
 
 
 def cmd_release(k: Kernel, args: argparse.Namespace) -> int:
-    k.release(uuid.UUID(args.id), actor_id=args.actor, attempt=args.attempt)
+    k.release(args.id, actor_id=args.actor, attempt=args.attempt)
     if not args.json:
-        print("released")
+        _human("released")
     _emit({"released": args.id}, args.json)
     return 0
 
 
 def cmd_transition(k: Kernel, args: argparse.Namespace) -> int:
     item = k.transition(
-        uuid.UUID(args.id), transition=args.transition, actor_id=args.actor,
+        args.id, transition=args.transition, actor_id=args.actor,
         actor_kind=args.actor_kind, role=args.role, attempt=args.attempt,
         fields=_fields(args.field), unset_fields=tuple(args.unset_field or ()),
         idempotency_key=args.idempotency_key, expected_seq=args.expected_seq,
     )
     if not args.json:
-        print(f"{args.transition} -> {item.state}")
+        _human(f"{args.transition} -> {item.state}")
     _emit({"id": str(item.id), "state": item.state, "fields": item.fields}, args.json)
     return 0
 
 
 def cmd_link(k: Kernel, args: argparse.Namespace) -> int:
-    k.link(uuid.UUID(args.source), uuid.UUID(args.target), args.type)
+    k.link(args.source, args.target, args.type)
     if not args.json:
-        print(f"{args.source} -{args.type}-> {args.target}")
+        _human(f"{args.source} -{args.type}-> {args.target}")
     _emit({"source": args.source, "target": args.target, "type": args.type}, args.json)
     return 0
 
 
 def cmd_unlink(k: Kernel, args: argparse.Namespace) -> int:
-    k.remove_link(uuid.UUID(args.source), uuid.UUID(args.target), args.type)
+    k.remove_link(args.source, args.target, args.type)
     if not args.json:
-        print(f"removed {args.source} -{args.type}-> {args.target}")
+        _human(f"absent {args.source} -{args.type}-> {args.target}")
     _emit({"source": args.source, "target": args.target, "type": args.type}, args.json)
     return 0
 
 
 def cmd_history(k: Kernel, args: argparse.Namespace) -> int:
-    events = k.history(uuid.UUID(args.id), limit=args.limit, after=args.after,
+    events = k.history(args.id, limit=args.limit, after=args.after,
                        before=args.before, newest=args.newest)
     out = [{"seq": e.seq, "actor": e.actor_id, "actor_kind": e.actor_kind,
             "transition": e.transition, "payload": e.payload,
@@ -307,7 +349,7 @@ def cmd_history(k: Kernel, args: argparse.Namespace) -> int:
         for e in events:
             cleared = e.payload.get("unset")
             note = f"  (cleared {', '.join(cleared)})" if cleared else ""
-            print(f"  {e.seq:>2}. {e.occurred_at:%Y-%m-%d %H:%M:%S}  "
+            _human(f"  {e.seq:>2}. {e.occurred_at:%Y-%m-%d %H:%M:%S}  "
                   f"{e.transition or 'created':<18} {e.actor_id} ({e.actor_kind}){note}")
         resume = ""
         if events:
@@ -328,25 +370,25 @@ def cmd_replay(k: Kernel, args: argparse.Namespace) -> int:
                                   "state": report.state, "fields": report.fields,
                                   "drift": report.drift}, default=str))
             else:
-                print(f"  {report.work_item_id}  state {report.state}  "
+                _human(f"  {report.work_item_id}  state {report.state}  "
                       f"drift {report.drift or 'none'}")
         return 1 if failed else 0
-    state, fields, drift = k.replay(uuid.UUID(args.id))
+    state, fields, drift = k.replay(args.id)
     if not args.json:
-        print(f"  state  {state}")
+        _human(f"  state  {state}")
         for key, val in sorted(fields.items()):
-            print(f"  · {key:<14} {val}")
-        print(f"  drift  {drift or 'none'}")
+            _human(f"  · {key:<14} {val}")
+        _human(f"  drift  {drift or 'none'}")
     _emit({"state": state, "fields": fields, "drift": drift}, args.json)
     return 1 if drift else 0
 
 
 def cmd_expire(k: Kernel, args: argparse.Namespace) -> int:
-    target = uuid.UUID(args.id) if args.id else None
+    target = args.id if args.id else None
     n = k.expire_leases(target)
     if not args.json:
         scope = f"on {args.id}" if target else "store-wide"
-        print(f"{n} expired lease(s) swept ({scope}); live leases are never touched")
+        _human(f"{n} expired lease(s) swept ({scope}); live leases are never touched")
     _emit({"swept": n, "work_item_id": args.id}, args.json)
     return 0
 
@@ -369,16 +411,16 @@ def cmd_workflow_validate(args: argparse.Namespace) -> int:
         errors = [str(e)]
     if errors:
         if not args.json:
-            print(f"\033[31m✗\033[0m {args.file}: {len(errors)} problem(s)")
+            _human(f"✗ {args.file}: {len(errors)} problem(s)")
             for message in errors:
-                print(f"    - {message}")
+                _human(f"    - {message}")
         _emit({"file": args.file, "valid": False, "problems": errors}, args.json)
         return 1
     # from_document(), not the module-private builder: the F0a report records
     # that this CLI reaches for no private attribute, and that stays true.
     wf = Workflow.from_document(doc)
     if not args.json:
-        print(f"\033[32m✓\033[0m {args.file}: {wf.name} — {len(wf.states)} states, "
+        _human(f"✓ {args.file}: {wf.name} — {len(wf.states)} states, "
               f"{len(wf.transitions)} transitions, types {sorted(wf.types)}")
     _emit({"file": args.file, "valid": True, "workflow": wf.name,
            "states": list(wf.states), "work_item_types": list(wf.types),
@@ -390,15 +432,15 @@ def cmd_workflow_show(k: Kernel, args: argparse.Namespace) -> int:
     wf = k.get_workflow(args.name, args.version)
     body = {"name": wf.name, "version": wf.version, **wf.as_json()}
     if not args.json:
-        print(f"  {wf.name} v{wf.version}")
-        print(f"  initial  {wf.initial}")
-        print(f"  states   {', '.join(wf.states)}")
-        print(f"  terminal {', '.join(wf.terminal) or '(none)'}")
+        _human(f"  {wf.name} v{wf.version}")
+        _human(f"  initial  {wf.initial}")
+        _human(f"  states   {', '.join(wf.states)}")
+        _human(f"  terminal {', '.join(wf.terminal) or '(none)'}")
         # The declared sets, because both are CLOSED and create/transition
         # refuse anything outside them: a person told only the states would
         # have to discover the type list by being refused.
-        print(f"  types    {', '.join(wf.types)}")
-        print(f"  roles    {', '.join(wf.role_names) or '(none)'}")
+        _human(f"  types    {', '.join(wf.types)}")
+        _human(f"  roles    {', '.join(wf.role_names) or '(none)'}")
         for name, (froms, to) in sorted(wf.transitions.items()):
             roles = wf.roles.get(name, ())
             need = wf.required_fields.get(name, ())
@@ -406,13 +448,13 @@ def cmd_workflow_show(k: Kernel, args: argparse.Namespace) -> int:
                 f"  roles={list(roles)}" if roles else "",
                 f"  requires={list(need)}" if need else "",
             ])
-            print(f"  · {name:<18} {list(froms)} -> {to}{extra}")
+            _human(f"  · {name:<18} {list(froms)} -> {to}{extra}")
     _emit(body, args.json)
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="regista", description=__doc__.split("\n")[0])
+    p = _RefusalParser(prog="regista", description=__doc__.split("\n")[0])
     p.add_argument("--dsn", help="PostgreSQL DSN (or set REGISTA_DSN)")
     p.add_argument("--schema", default="public", help="schema to use (default: public)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
@@ -421,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="create the kernel schema in an empty destination")
     sub.add_parser("health", help="schema version and basic counts")
     xp = sub.add_parser("expire-leases", help="sweep expired leases (never live ones)")
-    xp.add_argument("id", nargs="?", help="sweep only this item's lease (default: all)")
+    xp.add_argument("id", type=_uuid, nargs="?", help="sweep only this item's lease (default: all)")
 
     wf = sub.add_parser("workflow", help="workflow registry").add_subparsers(
         dest="subcommand", required=True)
@@ -443,7 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--idempotency-key")
 
     s = sub.add_parser("show", help="show one work item")
-    s.add_argument("id")
+    s.add_argument("id", type=_uuid)
 
     ls = sub.add_parser(
         "list",
@@ -455,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--field", action="append",
                     help="key=value custom-field filter, repeatable, exact match")
     ls.add_argument("--limit", type=int, default=DEFAULT_PAGE_LIMIT)
-    ls.add_argument("--after", help="id of the last item of the previous page")
+    ls.add_argument("--after", type=_uuid, help="id of the last item of the previous page")
     scope = ls.add_mutually_exclusive_group()
     scope.add_argument("--available", action="store_true",
                        help="only items with no LIVE lease")
@@ -472,26 +514,26 @@ def build_parser() -> argparse.ArgumentParser:
                          "rejected counterpart really stops blocking")
 
     cl = sub.add_parser("claim", help="acquire a lease")
-    cl.add_argument("id")
+    cl.add_argument("id", type=_uuid)
     cl.add_argument("--actor", required=True)
     cl.add_argument("--ttl", type=int, default=300)
 
     hb = sub.add_parser("heartbeat", help="extend a live lease you hold")
-    hb.add_argument("id")
+    hb.add_argument("id", type=_uuid)
     hb.add_argument("--actor", required=True)
     hb.add_argument("--attempt", type=int, required=True)
     hb.add_argument("--ttl", type=int, default=300)
 
     le = sub.add_parser("lease", help="who holds this item's lease, if anyone")
-    le.add_argument("id")
+    le.add_argument("id", type=_uuid)
 
     rl = sub.add_parser("release", help="release a lease")
-    rl.add_argument("id")
+    rl.add_argument("id", type=_uuid)
     rl.add_argument("--actor", required=True)
     rl.add_argument("--attempt", type=int, required=True)
 
     t = sub.add_parser("transition", help="make a validated transition")
-    t.add_argument("id")
+    t.add_argument("id", type=_uuid)
     t.add_argument("--transition", required=True)
     t.add_argument("--actor", required=True)
     t.add_argument("--actor-kind", default="agent", choices=["agent", "human", "system"])
@@ -505,24 +547,25 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--expected-seq", type=int)
 
     lk = sub.add_parser("link", help="create a typed link")
-    lk.add_argument("source")
-    lk.add_argument("target")
+    lk.add_argument("source", type=_uuid)
+    lk.add_argument("target", type=_uuid)
     lk.add_argument("--type", required=True)
 
     ul = sub.add_parser("unlink", help="remove a typed link")
-    ul.add_argument("source")
-    ul.add_argument("target")
+    ul.add_argument("source", type=_uuid)
+    ul.add_argument("target", type=_uuid)
     ul.add_argument("--type", required=True)
 
     h = sub.add_parser("history", help="ordered event history (one page)")
-    h.add_argument("id")
+    h.add_argument("id", type=_uuid)
     h.add_argument("--limit", type=int, default=DEFAULT_PAGE_LIMIT)
     h.add_argument("--after", type=int, help="seq of the last event of the previous page")
 
     r = sub.add_parser("check-history", help="check history read-only; exits 1 on drift")
     h.add_argument("--before", type=int, help="exclusive upper sequence bound")
     h.add_argument("--newest", action="store_true", help="select the newest matching suffix")
-    r.add_argument("id", nargs="?", help="omit to stream namespace replay (JSON Lines with --json)")
+    r.add_argument("id", type=_uuid, nargs="?",
+                   help="omit to stream namespace replay (JSON Lines with --json)")
     return p
 
 
@@ -545,16 +588,22 @@ def main(argv: list[str] | None = None) -> int:
     if "replay" in supplied:
         # argparse rejects the removed command; explain the semantic break too.
         # Detect command position with parse_known_args, rather than matching data.
-        probe = argparse.ArgumentParser(add_help=False)
+        probe = _RefusalParser(add_help=False)
         probe.add_argument("--dsn")
         probe.add_argument("--schema")
         probe.add_argument("--json", action="store_true")
-        _, remaining = probe.parse_known_args(supplied)
+        try:
+            _, remaining = probe.parse_known_args(supplied)
+        except KernelError as exc:
+            return _refusal(exc, "--json" in supplied)
         if remaining and remaining[0] == "replay":
-            print("refused: the old replay command rebuilt projections and is removed. "
-                  "Use check-history for the new read-only consistency check.", file=sys.stderr)
-            return 2
-    args = build_parser().parse_args(supplied)
+            return _refusal(InvalidFieldError(
+                "the old replay command rebuilt projections and is removed. "
+                "Use check-history for the new read-only consistency check."), "--json" in supplied)
+    try:
+        args = build_parser().parse_args(supplied)
+    except KernelError as exc:
+        return _refusal(exc, "--json" in supplied)
     key: Any = args.command
     if args.command == "workflow":
         key = (args.command, args.subcommand)
@@ -569,9 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         return handler(k, args)
     except KernelError as e:
         # Refusals are the product working, so they print cleanly and exit 2.
-        print(f"refused: {e}", file=sys.stderr)
-        _emit({"error": type(e).__name__, "message": str(e), "exit_code": 2}, args.json)
-        return 2
+        return _refusal(e, args.json)
     finally:
         if k is not None:
             k.close()

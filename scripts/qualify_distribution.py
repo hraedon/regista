@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
@@ -32,6 +33,61 @@ def run(argv: list[str], cwd: Path, env: dict[str, str]) -> str:
     if result.returncode:
         raise RuntimeError(f"command {argv[0]} failed: exit {result.returncode}")
     return result.stdout
+
+
+def faulted_write(
+    dsn: str, action: Callable[[], Any], *, schema: str = "public",
+    table: str = "events", operation: str = "INSERT",
+) -> None:
+    """Inject a real SQL failure after clean admission and after writing has begun.
+
+    Hold events so the writer queues on its insert, then install the fault before
+    releasing it. This preserves strict baseline admission without a library patch.
+    The fault and its function are always removed after the worker ends.
+    """
+    import psycopg
+    from psycopg.sql import SQL, Identifier
+
+    with psycopg.connect(dsn) as blocker:
+        blocker.execute(SQL("SET search_path TO {}, pg_catalog").format(Identifier(schema)))
+        blocker.execute("LOCK TABLE events IN ACCESS EXCLUSIVE MODE")
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(action)
+                try:
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline:
+                        waiting = blocker.execute(
+                            "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_locks "
+                            "WHERE relation='events'::regclass AND NOT granted)"
+                        ).fetchone()[0]
+                        if waiting:
+                            break
+                        if future.done():
+                            future.result()  # Show an admission error instead of timing out.
+                            raise AssertionError(
+                                "writer completed before reaching the event barrier")
+                        time.sleep(0.01)
+                    else:
+                        raise AssertionError("writer never queued on the event barrier")
+                    blocker.execute("CREATE FUNCTION qualification_fail() RETURNS trigger "
+                                    "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION "
+                                    "'qualification rollback'; END $$")
+                    blocker.execute(SQL(
+                        "CREATE TRIGGER qualification_fail BEFORE {} ON {} "
+                        "FOR EACH ROW EXECUTE FUNCTION qualification_fail()"
+                    ).format(SQL(operation), Identifier(table)))
+                    blocker.commit()
+                    future.result(timeout=15)
+                    raise AssertionError("injected SQL failure was ignored")
+                finally:
+                    blocker.rollback()  # Unblock even if installing the fault failed.
+        finally:
+            with psycopg.connect(dsn, autocommit=True) as cleanup:
+                cleanup.execute(SQL("SET search_path TO {}, pg_catalog").format(Identifier(schema)))
+                cleanup.execute(SQL("DROP TRIGGER IF EXISTS qualification_fail ON {}").format(
+                    Identifier(table)))
+                cleanup.execute("DROP FUNCTION IF EXISTS qualification_fail()")
 
 
 def probe(mode: str, dsn: str, directory: Path) -> None:
@@ -143,23 +199,12 @@ def probe(mode: str, dsn: str, directory: Path) -> None:
             raise AssertionError("invalid JSON committed")
         assert (k.get(item.id), k.history(item.id)) == before
         # Synthetic DB failure exercises rollback after SQL effects have begun.
-        with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute("CREATE FUNCTION qualification_fail() RETURNS trigger "
-                         "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION "
-                         "'qualification rollback'; END $$")
-            conn.execute("CREATE TRIGGER qualification_fail AFTER INSERT ON events "
-                         "FOR EACH ROW EXECUTE FUNCTION qualification_fail()")
         try:
-            try:
-                k.transition(item.id, transition="finish", actor_id="q")
-            except DatabaseOperationError:
-                pass
-            else:
-                raise AssertionError("injected SQL failure was ignored")
-        finally:
-            with psycopg.connect(dsn, autocommit=True) as conn:
-                conn.execute("DROP TRIGGER qualification_fail ON events")
-                conn.execute("DROP FUNCTION qualification_fail()")
+            faulted_write(dsn, lambda: k.transition(item.id, transition="finish", actor_id="q"))
+        except DatabaseOperationError:
+            pass
+        else:
+            raise AssertionError("injected SQL failure was ignored")
         assert (k.get(item.id), k.history(item.id)) == before
         print("rollback: invalid input and injected SQL failure left state/history unchanged")
 

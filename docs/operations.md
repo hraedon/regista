@@ -6,7 +6,8 @@ a DSN and one schema name to `Kernel.connect`; the CLI takes `--dsn` or
 keys, or sibling tools are required. DSNs may contain credentials: keep them out
 of shared transcripts. Create service roles and grant database/schema/table
 permissions yourself; Regista does not provision roles. A role initializing a
-new schema needs CREATE on the database or ownership of the precreated schema;
+new schema needs database `CREATE` privilege; `initialize()` creates an absent
+namespace transactionally. Alternatively use a pre-created owned schema;
 a runtime role needs USAGE plus the required table/sequence permissions.
 Use a separate database or restricted roles per trust boundary. Schema scoping
 is not a substitute for PostgreSQL privilege isolation.
@@ -83,3 +84,38 @@ separately; a restored database may precede an already completed external effect
 
 See [breaking changes](breaking-0.8.md) and
 [older-release assessment](../plans/032-d12-yank-assessment.md).
+
+## Namespace and retry contracts
+
+`initialize()` takes no SQL-path argument: it loads the pinned packaged resource,
+creates an absent schema transactionally, and accepts an existing version-1 schema
+only when its complete catalog matches `baseline.manifest.json`. Every write checks
+that manifest again; foreign relations, functions/types, columns, constraints,
+indexes, triggers or rules refuse with `UnsupportedSchemaError`. Ownership and
+grants are operator configuration, excluded from the portable manifest. A trusted
+database administrator can change objects after admission; this is not hostile-admin
+isolation. Unsupported-version diagnostic reads retain the A5 behavior.
+
+Special `$user`, `pg_*` and `information_schema` names refuse with `InvalidFieldError`.
+Checkout and operation verification require the effective literal namespace and its
+expected path; active temporary schemas refuse to prevent relation shadowing.
+
+Release locks the item first and waits for an already-fenced transition to commit.
+It deletes only a live matching lease; an expired holder cannot remove the fence.
+Takeover or an explicit sweep resolves expiry. Unlink is idempotent: an absent typed
+link is a successful no-op, including concurrent or lost-response retries. Blocking
+inspects only the immediate counterpart; an unsatisfied counterpart still blocks
+its downstream item even when it is itself blocked.
+
+Idempotency retries stream events through the immutable result sequence with a
+server cursor in batches of 64. Memory is bounded by a batch and current fields;
+time remains proportional to the history prefix. No snapshot column or schema-pin
+change is needed. The unpublished baseline-1 event digest now hashes canonical JSON
+`{"transition": <name-or-null>, "payload": <payload>}`; replay also checks source and
+destination against the pinned workflow version. Existing pre-release stores with
+the former digest are outside the qualified candidate and must be recreated.
+
+Human CLI rendering escapes C0/C1 controls, ESC, DEL, bidi controls and embedded
+line breaks. JSON mode keeps its serialization. Bad UUIDs, malformed `--field` syntax
+and JSON integer/depth parser limits use exit 2, a clean refusal on stderr, and an
+error/message/exit_code JSON object on stdout under `--json`.

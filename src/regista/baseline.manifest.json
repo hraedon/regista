@@ -1,0 +1,1489 @@
+{
+  "catalog": {
+    "inheritance_count": 0,
+    "objects": [
+      [
+        "table",
+        "claim_attempts"
+      ],
+      [
+        "table",
+        "claims"
+      ],
+      [
+        "table",
+        "events"
+      ],
+      [
+        "table",
+        "idempotency_keys"
+      ],
+      [
+        "table",
+        "kernel_meta"
+      ],
+      [
+        "table",
+        "links"
+      ],
+      [
+        "table",
+        "work_items_current"
+      ],
+      [
+        "table",
+        "workflow_registry"
+      ]
+    ],
+    "relations": [
+      {
+        "columns": [
+          [
+            1,
+            "work_item_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            2,
+            "last_attempt",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            "0",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "claim_attempts_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (work_item_id)"
+          ],
+          [
+            "claim_attempts_work_item_id_fkey",
+            "f",
+            true,
+            "FOREIGN KEY (work_item_id) REFERENCES work_items_current(work_item_id)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "claim_attempts_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX claim_attempts_pkey ON <schema>.claim_attempts USING btree (work_item_id)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "claim_attempts",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": [
+          [
+            "claim_attempts_work_item_id_fkey",
+            true,
+            "O",
+            5,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_ins",
+            null
+          ],
+          [
+            "claim_attempts_work_item_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_upd",
+            null
+          ]
+        ]
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "claim_attempts_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "work_item_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            2,
+            "actor_id",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            3,
+            "attempt_number",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            4,
+            "acquired_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ],
+          [
+            5,
+            "expires_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "claims_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (work_item_id)"
+          ],
+          [
+            "claims_work_item_id_fkey",
+            "f",
+            true,
+            "FOREIGN KEY (work_item_id) REFERENCES work_items_current(work_item_id)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "claims_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX claims_pkey ON <schema>.claims USING btree (work_item_id)"
+          ],
+          [
+            "idx_claims_expiry",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_claims_expiry ON <schema>.claims USING btree (expires_at)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "claims",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": [
+          [
+            "claims_work_item_id_fkey",
+            true,
+            "O",
+            5,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_ins",
+            null
+          ],
+          [
+            "claims_work_item_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_upd",
+            null
+          ]
+        ]
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "claims_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "event_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            2,
+            "work_item_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            3,
+            "event_seq",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            4,
+            "actor_id",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            5,
+            "actor_kind",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            6,
+            "transition",
+            "text",
+            false,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            7,
+            "payload",
+            "jsonb",
+            true,
+            false,
+            "",
+            "",
+            "'{}'::jsonb",
+            null,
+            null
+          ],
+          [
+            8,
+            "payload_hash",
+            "bytea",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            9,
+            "prev_event_hash",
+            "bytea",
+            false,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            10,
+            "occurred_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "events_actor_kind_check",
+            "c",
+            true,
+            "CHECK ((actor_kind = ANY (ARRAY['agent'::text, 'human'::text, 'system'::text])))"
+          ],
+          [
+            "events_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (event_id)"
+          ],
+          [
+            "events_work_item_id_event_seq_key",
+            "u",
+            true,
+            "UNIQUE (work_item_id, event_seq)"
+          ],
+          [
+            "events_work_item_id_fkey",
+            "f",
+            true,
+            "FOREIGN KEY (work_item_id) REFERENCES work_items_current(work_item_id)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "events_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX events_pkey ON <schema>.events USING btree (event_id)"
+          ],
+          [
+            "events_work_item_id_event_seq_key",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX events_work_item_id_event_seq_key ON <schema>.events USING btree (work_item_id, event_seq)"
+          ],
+          [
+            "idx_events_actor",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_events_actor ON <schema>.events USING btree (actor_id)"
+          ],
+          [
+            "idx_events_occurred",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_events_occurred ON <schema>.events USING btree (occurred_at)"
+          ],
+          [
+            "idx_events_transition",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_events_transition ON <schema>.events USING btree (transition)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "events",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": [
+          [
+            "events_work_item_id_fkey",
+            true,
+            "O",
+            5,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_ins",
+            null
+          ],
+          [
+            "events_work_item_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_upd",
+            null
+          ]
+        ]
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "events_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "events_work_item_id_event_seq_key",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "idempotency_key",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            2,
+            "work_item_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            3,
+            "event_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            4,
+            "request_hash",
+            "bytea",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            5,
+            "created_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "idempotency_keys_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (idempotency_key)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "idempotency_keys_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX idempotency_keys_pkey ON <schema>.idempotency_keys USING btree (idempotency_key)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "idempotency_keys",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idempotency_keys_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_claims_expiry",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_events_actor",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_events_occurred",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_events_transition",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_links_target",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_wic_fields",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_wic_state",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_wic_type",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "idx_wic_workflow",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "id",
+            "boolean",
+            true,
+            false,
+            "",
+            "",
+            "true",
+            null,
+            null
+          ],
+          [
+            2,
+            "kernel_schema_version",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            3,
+            "created_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "kernel_meta_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (id)"
+          ],
+          [
+            "kernel_meta_singleton",
+            "c",
+            true,
+            "CHECK (id)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "kernel_meta_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX kernel_meta_pkey ON <schema>.kernel_meta USING btree (id)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "kernel_meta",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "kernel_meta_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "source_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            2,
+            "target_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            3,
+            "link_type",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            4,
+            "created_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "links_no_self",
+            "c",
+            true,
+            "CHECK ((source_id <> target_id))"
+          ],
+          [
+            "links_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (source_id, target_id, link_type)"
+          ],
+          [
+            "links_source_id_fkey",
+            "f",
+            true,
+            "FOREIGN KEY (source_id) REFERENCES work_items_current(work_item_id)"
+          ],
+          [
+            "links_target_id_fkey",
+            "f",
+            true,
+            "FOREIGN KEY (target_id) REFERENCES work_items_current(work_item_id)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "idx_links_target",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_links_target ON <schema>.links USING btree (target_id, link_type)"
+          ],
+          [
+            "links_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX links_pkey ON <schema>.links USING btree (source_id, target_id, link_type)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "links",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": [
+          [
+            "links_source_id_fkey",
+            true,
+            "O",
+            5,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_ins",
+            null
+          ],
+          [
+            "links_source_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_upd",
+            null
+          ],
+          [
+            "links_target_id_fkey",
+            true,
+            "O",
+            5,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_ins",
+            null
+          ],
+          [
+            "links_target_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_upd",
+            null
+          ]
+        ]
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "links_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "work_item_id",
+            "uuid",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            2,
+            "workflow_name",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            3,
+            "workflow_version",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            4,
+            "work_item_type",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            5,
+            "current_state",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            6,
+            "custom_fields",
+            "jsonb",
+            true,
+            false,
+            "",
+            "",
+            "'{}'::jsonb",
+            null,
+            null
+          ],
+          [
+            7,
+            "last_event_seq",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            8,
+            "next_event_seq",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            9,
+            "last_event_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            10,
+            "created_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "work_items_current_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (work_item_id)"
+          ],
+          [
+            "work_items_current_workflow_name_workflow_version_fkey",
+            "f",
+            true,
+            "FOREIGN KEY (workflow_name, workflow_version) REFERENCES workflow_registry(workflow_name, version)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "idx_wic_fields",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_wic_fields ON <schema>.work_items_current USING gin (custom_fields jsonb_path_ops)"
+          ],
+          [
+            "idx_wic_state",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_wic_state ON <schema>.work_items_current USING btree (current_state)"
+          ],
+          [
+            "idx_wic_type",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_wic_type ON <schema>.work_items_current USING btree (work_item_type)"
+          ],
+          [
+            "idx_wic_workflow",
+            true,
+            true,
+            true,
+            "CREATE INDEX idx_wic_workflow ON <schema>.work_items_current USING btree (workflow_name, workflow_version)"
+          ],
+          [
+            "work_items_current_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX work_items_current_pkey ON <schema>.work_items_current USING btree (work_item_id)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "work_items_current",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": [
+          [
+            "claim_attempts_work_item_id_fkey",
+            true,
+            "O",
+            9,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_del",
+            null
+          ],
+          [
+            "claim_attempts_work_item_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_upd",
+            null
+          ],
+          [
+            "claims_work_item_id_fkey",
+            true,
+            "O",
+            9,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_del",
+            null
+          ],
+          [
+            "claims_work_item_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_upd",
+            null
+          ],
+          [
+            "events_work_item_id_fkey",
+            true,
+            "O",
+            9,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_del",
+            null
+          ],
+          [
+            "events_work_item_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_upd",
+            null
+          ],
+          [
+            "links_source_id_fkey",
+            true,
+            "O",
+            9,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_del",
+            null
+          ],
+          [
+            "links_source_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_upd",
+            null
+          ],
+          [
+            "links_target_id_fkey",
+            true,
+            "O",
+            9,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_del",
+            null
+          ],
+          [
+            "links_target_id_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_upd",
+            null
+          ],
+          [
+            "work_items_current_workflow_name_workflow_version_fkey",
+            true,
+            "O",
+            5,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_ins",
+            null
+          ],
+          [
+            "work_items_current_workflow_name_workflow_version_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_check_upd",
+            null
+          ]
+        ]
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "work_items_current_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      },
+      {
+        "columns": [
+          [
+            1,
+            "workflow_name",
+            "text",
+            true,
+            false,
+            "",
+            "",
+            null,
+            "pg_catalog",
+            "default"
+          ],
+          [
+            2,
+            "version",
+            "integer",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            3,
+            "definition",
+            "jsonb",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            4,
+            "content_hash",
+            "bytea",
+            true,
+            false,
+            "",
+            "",
+            null,
+            null,
+            null
+          ],
+          [
+            5,
+            "registered_at",
+            "timestamp with time zone",
+            true,
+            false,
+            "",
+            "",
+            "clock_timestamp()",
+            null,
+            null
+          ]
+        ],
+        "constraints": [
+          [
+            "workflow_registry_pkey",
+            "p",
+            true,
+            "PRIMARY KEY (workflow_name, version)"
+          ]
+        ],
+        "force_rls": false,
+        "indexes": [
+          [
+            "workflow_registry_pkey",
+            true,
+            true,
+            true,
+            "CREATE UNIQUE INDEX workflow_registry_pkey ON <schema>.workflow_registry USING btree (workflow_name, version)"
+          ]
+        ],
+        "is_partition": false,
+        "kind": "r",
+        "name": "workflow_registry",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": [
+          [
+            "work_items_current_workflow_name_workflow_version_fkey",
+            true,
+            "O",
+            9,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_del",
+            null
+          ],
+          [
+            "work_items_current_workflow_name_workflow_version_fkey",
+            true,
+            "O",
+            17,
+            false,
+            false,
+            "pg_catalog",
+            "RI_FKey_noaction_upd",
+            null
+          ]
+        ]
+      },
+      {
+        "columns": [],
+        "constraints": [],
+        "force_rls": false,
+        "indexes": [],
+        "is_partition": false,
+        "kind": "i",
+        "name": "workflow_registry_pkey",
+        "options": null,
+        "persistence": "p",
+        "policy_count": 0,
+        "rls": false,
+        "rules": [],
+        "triggers": []
+      }
+    ]
+  },
+  "catalog_fingerprint": "af7d58303e81cc2c57d3c84d10ffacdbf72894a14dd6144c7ed8e3384bf367f9",
+  "schema_sha256": "4bc366e7bda15cbe75baf42d522e22d152f1cce9966114e6bd9468e2caf8010d"
+}

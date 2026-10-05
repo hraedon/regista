@@ -2,7 +2,8 @@
 
 Current: [API](api.md), [CLI](cli.md), [operations and preservation](operations.md),
 [breaking changes](breaking-0.8.md), and the root [specification](../spec.md).
-The publication review checklist governs repository publication hygiene.
+Publication readiness is recorded in [Plan 032 F5](../plans/032-f5-release-prep.md).
+The [old publication checklist](publication-review-checklist.md) is **historical**.
 
 Everything in `0.6.0/`, `0.7.0/`, `0.7.1/`, `pre-0.8/`, `suite-config.md`,
 `review-assurance.md`, and `principal-lifecycle-threat-model.md` is **historical**.

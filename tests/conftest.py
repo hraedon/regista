@@ -39,10 +39,11 @@ def dsn() -> str:
 def schema_factory(dsn: str) -> Iterator[Callable[[], str]]:
     names: list[str] = []
 
-    def create() -> str:
+    def create(*, precreate: bool = True) -> str:
         name = "f1_" + uuid.uuid4().hex
-        with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute(SQL("CREATE SCHEMA {}").format(Identifier(name)))
+        if precreate:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute(SQL("CREATE SCHEMA {}").format(Identifier(name)))
         names.append(name)
         return name
 
@@ -93,3 +94,8 @@ def workflow() -> Workflow:
 def registered(kernel: Kernel, workflow: Workflow) -> Kernel:
     assert kernel.register_workflow(workflow) == 1
     return kernel
+
+
+@pytest.fixture
+def absent_schema(schema_factory: Callable[..., str]) -> str:
+    return schema_factory(precreate=False)

@@ -27,6 +27,22 @@ handoffs and read-only history consistency checks over PostgreSQL.
   leases, counters, links and idempotency keys. Backup/restore includes a valid write.
 - Python >=3.11; CI tests 3.11–3.14 with PostgreSQL 15. Pinned schema/artifact guard
   qualifies committed package contents and sdist rebuild equivalence (#65).
+- `initialize()` takes no caller SQL path, always loads pinned package SQL, and
+  creates an absent namespace. Complete baseline catalog checks refuse counterfeit,
+  partial or foreign-object schemas before writes. Requires database `CREATE` or a
+  pre-created owned schema. Special PostgreSQL schema names refuse; every operation
+  verifies literal namespace resolution and prevents temporary-table shadowing.
+- Unlink retries and concurrent identical removals are successful no-ops. Release
+  deletes only live matching leases and drains fenced in-flight transitions; expired
+  leases remain fenced until takeover/sweep.
+- Idempotent retries stream history with bounded memory. Replay binds transition
+  names into event digests and verifies pinned source/destination rules. This changes
+  the unpublished baseline-1 digest contract without changing `schema.sql`.
+- CLI human values escape terminal/log/bidi controls; JSON serialization is unchanged.
+  Malformed UUIDs/fields and JSON parser limits use the documented exit-2 envelope.
+- Distribution guards reject gzip/tar trailers and bind sdist metadata to the wheel.
+  Workflow actions, uv plus platform checksum, and twine are pinned; publish checks
+  identifiers and tag-commit ancestry on main before build or credentials.
 - 90-day stabilization window from publication for regressions and serious
   security/data-loss reports; no feature promise or SLA. Publication/end dates will
   be recorded at release. Public issues: GitHub; sensitive reports: plm@hraedon.com.

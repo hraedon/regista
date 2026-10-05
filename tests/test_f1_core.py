@@ -326,30 +326,18 @@ def test_reserved_payload_refusal(registered: Kernel, key: str) -> None:
 @pytest.mark.parametrize("phase", ["create", "transition"])
 def test_event_projection_atomicity(registered: Kernel, dsn: str, schema: str, phase: str) -> None:
     item = create(registered)
-    # A database-side fault AFTER the first effect. No mocking kernel internals.
+    from scripts.qualify_distribution import faulted_write
+
+    # Install the real database fault after clean baseline admission.
     table = "events" if phase == "create" else "work_items_current"
     operation = "INSERT" if phase == "create" else "UPDATE"
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute(
-            SQL(
-                "CREATE FUNCTION {}.fail_write() RETURNS trigger LANGUAGE plpgsql AS "
-                "$$ BEGIN RAISE EXCEPTION 'F1 injected failure'; END $$"
-            ).format(Identifier(schema))
-        )
-        conn.execute(
-            SQL(
-                "CREATE TRIGGER fail_write BEFORE {} ON {}.{} "
-                "FOR EACH ROW EXECUTE FUNCTION {}.fail_write()"
-            ).format(SQL(operation), Identifier(schema), Identifier(table), Identifier(schema))
-        )
     before = registered.get(item.id), registered.history(item.id), registered.health()["work_items"]
+    action = (lambda: create(registered, title="must roll back")) if phase == "create" else (
+        lambda: registered.transition(item.id, transition="start", actor_id="w",
+                                      idempotency_key="atomic")
+    )
     with pytest.raises(DatabaseOperationError):
-        if phase == "create":
-            create(registered, title="must roll back")
-        else:
-            registered.transition(
-                item.id, transition="start", actor_id="w", idempotency_key="atomic"
-            )
+        faulted_write(dsn, action, schema=schema, table=table, operation=operation)
     assert (
         registered.get(item.id),
         registered.history(item.id),

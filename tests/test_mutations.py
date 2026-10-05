@@ -896,12 +896,12 @@ BEGIN
 END
 $proof$;
 """
-            with tempfile.NamedTemporaryFile("w", suffix=".sql") as custom_schema:
-                custom_schema.write(schema_sql)
-                custom_schema.write(session_mutation)
-                custom_schema.flush()
-                k = Kernel.connect(dsn, schema=schema, pool_max_size=1)
-                k.initialize(custom_schema.name)
+            from unittest.mock import patch
+
+            k = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+            with patch("regista.kernel._load_schema_sql",
+                       return_value=schema_sql + session_mutation):
+                k.initialize()
 
             # register_workflow writes. Without a whole-session reset this runs
             # as the weak role and in a read-only transaction; either leak makes
@@ -951,6 +951,7 @@ $proof$;
             "an open transaction was committed or reused instead of rolled back"
         )
 
+        surgery(dsn, "m_pool_clean", "DROP TABLE pool_probe", ())
         failed = k._pool.getconn()
         try:
             failed.execute("SELECT 1 / 0")

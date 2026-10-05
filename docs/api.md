@@ -87,7 +87,7 @@ MAX_WORKFLOW_BYTES = 262144
 ### `REPLAY_COVERS`
 
 ```python
-REPLAY_COVERS = ('current_state', 'custom_fields', 'custom field clears (unset_fields)', 'last_event_seq', 'event payload hashes', 'event chain links', 'event sequence density', 'stored transition names against the pinned workflow version')
+REPLAY_COVERS = ('current_state', 'custom_fields', 'custom field clears (unset_fields)', 'last_event_seq', 'event payload hashes', 'event chain links', 'event sequence density', 'stored transition names and source/destination rules against the pinned workflow version')
 ```
 
 ### `REPLAY_DOES_NOT_COVER`
@@ -220,9 +220,10 @@ Kernel.blocked(self, *, link_type: 'str', direction: "Literal['incoming', 'outgo
 Items with at least one linked counterpart that is NOT yet satisfied.
 
 The one link-aware query. SINGLE HOP ONLY: it looks at an item's direct
-counterparts and stops. It does not walk a chain, so an item whose
-blocker is itself blocked is not reported here; ask again about the
-blocker. There is no transitive closure and there will not be one --
+counterparts and stops. Only the immediate counterpart's state is
+inspected. A downstream item is reported when that counterpart is
+unsatisfied, including when the counterpart is itself blocked.
+There is no transitive closure and there will not be one --
 Plan 032 permits state-based blocked queries and forbids a dependency
 scheduler, and recursion is how a query becomes one.
 
@@ -385,7 +386,7 @@ canonical workflow or an inferred scheduling policy.
 ### `Kernel.initialize`
 
 ```python
-Kernel.initialize(self, schema_sql_path: 'str | None' = None) -> 'None'
+Kernel.initialize(self) -> 'None'
 ```
 
 Create the kernel schema in an empty destination.
@@ -499,7 +500,9 @@ Kernel.release(self, work_item_id: 'uuid.UUID', *, actor_id: 'str', attempt: 'in
 Release a lease. Takes the primitive rather than a Claim, so a CLI
 holding only (id, actor, attempt) can call it without fabricating one.
 
-Releasing an already-dead or already-replaced lease is a no-op, not a
+Locks the item first, draining an already-fenced in-flight transition.
+Deletes only a live matching lease; expiry remains fenced until takeover
+or an explicit sweep. Releasing an already-dead or replaced lease is a no-op, not a
 refusal: release is cleanup, and cleanup that raises makes callers wrap
 it in a bare except.
 
@@ -509,7 +512,7 @@ it in a bare except.
 Kernel.remove_link(self, source: 'uuid.UUID', target: 'uuid.UUID', link_type: 'str') -> 'None'
 ```
 
-Remove an explicit relationship; refuse an absent one. Outside replay.
+Remove an explicit relationship; absence is a successful no-op. Outside replay.
 
 ### `Kernel.replay`
 
@@ -525,7 +528,8 @@ disagrees with the projection.
 
 What is checked, exactly -- the whole of the supported projection, not
 just the state:
-  * every event's payload against its recorded payload_hash;
+  * every event's transition and payload against its recorded payload_hash;
+  * source/destination against the pinned workflow transition rule;
   * every chain link against its predecessor;
   * sequence numbers dense from 0;
   * replayed state vs current_state;

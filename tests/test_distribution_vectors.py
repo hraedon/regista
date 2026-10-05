@@ -40,7 +40,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def _load_guard() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
-        "check_published_migrations", REPO_ROOT / "scripts" / "check_published_migrations.py"
+        "check_published_migrations", Path(os.environ.get(
+            "REGISTA_GUARD_TEST_ROOT", REPO_ROOT)) / "scripts/check_published_migrations.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -190,7 +191,7 @@ def _sdist_bytes(
     files: dict[str, bytes],
     extra: list[tarfile.TarInfo] = (),  # type: ignore[assignment]
     *,
-    pkg_info: bytes | None = b"Name: r\n",
+    pkg_info: bytes | None = METADATA,
 ) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
@@ -1284,6 +1285,14 @@ def test_edited_generated_metadata_differs_from_the_rebuilds(
                                            b"[console_scripts]\nx = regista:main\n"})
     d = _dist(tmp_path, wheel=edited)
     _stub_rebuilds(monkeypatch, pristine)
+    if kind == "requires-dist":
+        with pytest.raises(guard.GuardError, match="PKG-INFO differs"):
+            guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo")
+        # A rebuild matching the edited wheel cannot bypass direct metadata binding.
+        _stub_rebuilds(monkeypatch, edited)
+        with pytest.raises(guard.GuardError, match="PKG-INFO differs"):
+            guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo")
+        return
     problems = guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo")
     assert any("differs from the uv rebuild" in p for p in problems), problems
     assert any("differs from the pip rebuild" in p for p in problems), problems
@@ -1308,8 +1317,12 @@ def test_round4_repros_fail_against_a_real_build(tmp_path: Path, kind: str) -> N
         else _with_entry_points(blob, b"[console_scripts]\nregista = os:system\n")
     )
     assert guard.read_wheel(whl.read_bytes(), whl.name) is not None  # structurally valid
-    problems = guard.check_dist(guard.load_ledger(), dist, repo_root=clone)
-    assert any("rebuild" in p for p in problems), problems
+    if kind == "requires-dist":
+        with pytest.raises(guard.GuardError, match="PKG-INFO differs"):
+            guard.check_dist(guard.load_ledger(), dist, repo_root=clone)
+    else:
+        problems = guard.check_dist(guard.load_ledger(), dist, repo_root=clone)
+        assert any("rebuild" in p for p in problems), problems
 
 
 def test_a_dirty_tracked_file_is_refused(tmp_path: Path) -> None:
@@ -1431,7 +1444,7 @@ def test_an_executable_sdist_member_in_package_data_is_refused(tmp_path: Path) -
     files.pop("src/regista/__init__.py", None)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, data in {"PKG-INFO": b"Name: r\n", "pyproject.toml": PYPROJECT, **files}.items():
+        for name, data in {"PKG-INFO": METADATA, "pyproject.toml": PYPROJECT, **files}.items():
             ti = tarfile.TarInfo(f"r-0.0.0/{name}")
             ti.size = len(data)
             tf.addfile(ti, io.BytesIO(data))
@@ -1692,3 +1705,42 @@ def test_a_sha256_repository_is_read_and_verified(tmp_path: Path) -> None:
     _git_commit_all(repo)
     tracked = guard._git_tracked_files(repo)
     assert tracked["src/regista/__init__.py"] == b""
+
+
+@pytest.mark.parametrize("trailer", ["gzip", "raw", "tar-data", "tar-zero"])
+def test_c1_sdist_envelope_refuses_trailers(trailer: str) -> None:
+    import gzip
+
+    blob = _sdist_bytes(_sdist_files(BASE), pkg_info=METADATA)
+    if trailer == "gzip":
+        blob += gzip.compress(b"unreviewed trailer", mtime=0)
+    elif trailer == "raw":
+        blob += b"unreviewed trailer"
+    else:
+        blob = gzip.compress(gzip.decompress(blob) +
+                             (b"unreviewed trailer" if trailer == "tar-data" else b"\0" * 10240))
+    with pytest.raises(guard.GuardError, match=r"gzip|tar envelope"):
+        guard.read_sdist(blob, "r-0.0.0.tar.gz")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("Name", "counterfeit"), ("Version", "9.9.9"), ("Summary", "altered"),
+    ("Requires-Python", ">=99"), ("Requires-Dist", "counterfeit-dependency"),
+    ("Classifier", "Counterfeit"), ("Project-URL", "Counterfeit, https://example.invalid"),
+    ("Author-email", "counterfeit@example.invalid"), ("License", "Counterfeit"),
+    ("License-File", "counterfeit.txt"), ("License-Expression", "Counterfeit"),
+    ("Provides-Extra", "counterfeit"), ("Description-Content-Type", "text/plain"),
+    ("Metadata-Version", "2.1"), ("Description", "altered readme"),
+])
+def test_c1_sdist_metadata_is_bound(tmp_path: Path, field: str, value: str) -> None:
+    metadata = METADATA + f"{field}: {value}\n".encode()
+    dist = _dist(tmp_path, sdist=_sdist_bytes(_sdist_files(BASE), pkg_info=metadata))
+    with pytest.raises(guard.GuardError, match=r"PKG-INFO|metadata"):
+        guard.check_dist(_ledger(), dist, repo_root=tmp_path / "repo", rebuild_sdists=False)
+
+
+def test_c1_sdist_root_is_bound() -> None:
+    blob = _sdist_bytes(_sdist_files(BASE), pkg_info=METADATA)
+    # Naming correctness must apply even without repository binding.
+    with pytest.raises(guard.GuardError, match=r"root|name|version"):
+        guard.read_sdist(blob, "wrong-9.9.9.tar.gz")

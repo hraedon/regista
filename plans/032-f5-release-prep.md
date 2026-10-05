@@ -135,3 +135,21 @@ These are the workflow comments' prerequisites, **not verified from this repo**:
 4. Only then declare publication complete and record public artifact hashes,
    maintenance dates and the owner's yank disposition. None of these
    post-publication actions was performed during this preparation.
+
+## Owner verification of tag-ruleset principals (C1)
+
+Before creating a `v*` tag, the owner must inspect the actual tag ruleset and list
+its allowed creation/bypass principals: only the designated release-owner account
+and any explicitly approved release automation identity may create the release tag.
+Ordinary write collaborators, PR automation, broad teams and administrators must
+have no implicit bypass; record the precise account/app/team identities and their
+permissions at release approval. Protect main against direct pushes and require PR
+review and passing CI. The `pypi` environment must require a separate reviewer,
+prevent self-review and administrator bypass, and allow only main and protected
+`v*` tags. No settings inspection or mutation is claimed by C1.
+
+Repository verification fetches origin/main and requires the tag commit to be its
+ancestor, checks tag/package version, and runs the fail-closed identifier scan before
+building. This proves merged ancestry; it cannot prove reviewer identity, branch
+ruleset enforcement or environment settings from repository source. The owner must
+verify those external controls before authorizing a tag or upload.

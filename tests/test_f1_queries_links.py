@@ -199,12 +199,10 @@ def test_link_vocabulary_and_removal(kernel: Kernel, workflow: Workflow) -> None
     assert kernel.links_from(a.id) == [(b.id, "blocks")]
     kernel.remove_link(a.id, b.id, "blocks")
     assert kernel.links_from(a.id) == []
-    with pytest.raises(InvalidFieldError, match="no such"):
-        kernel.remove_link(a.id, b.id, "blocks")
+    kernel.remove_link(a.id, b.id, "blocks")
 
 
 def test_remove_absent_link(registered: Kernel) -> None:
     a, b = seed(registered, 2)
-    with pytest.raises(InvalidFieldError, match="no such"):
-        registered.remove_link(a.id, b.id, "blocks")
+    registered.remove_link(a.id, b.id, "blocks")
     assert registered.links_from(a.id) == []

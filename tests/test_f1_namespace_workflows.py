@@ -12,7 +12,6 @@ import yaml
 from psycopg.sql import SQL, Identifier
 
 from regista import (
-    DatabaseOperationError,
     InvalidWorkflowError,
     Kernel,
     UnsupportedSchemaError,
@@ -48,12 +47,12 @@ def test_supplied_schema_cannot_redirect(registered: Kernel, dsn: str, schema: s
     item = registered.create_work_item(workflow="review", type="task", actor_id="w")
     malicious = Kernel.connect(dsn, schema=f"absent, {schema}")
     try:
-        with pytest.raises(DatabaseOperationError):
-            malicious.initialize()
-        with pytest.raises(DatabaseOperationError):
-            malicious.list_items()
+        malicious.initialize()
+        assert malicious.list_items() == []
     finally:
         malicious.close()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(SQL("DROP SCHEMA {} CASCADE").format(Identifier(f"absent, {schema}")))
     assert registered.get(item.id) == item and len(registered.history(item.id)) == 1
 
 
@@ -260,9 +259,8 @@ def test_database_role_is_scoped(
         restricted = Kernel.connect(scoped_dsn, schema=schema)
         made = restricted.create_work_item(workflow="review", type="task", actor_id="w")
         assert restricted.get(made.id) == made
-        redirected = Kernel.connect(scoped_dsn, schema=sibling_schema)
-        with pytest.raises(DatabaseOperationError):
-            redirected.list_items()
+        with pytest.raises(UnsupportedSchemaError, match="effective namespace"):
+            redirected = Kernel.connect(scoped_dsn, schema=sibling_schema)
         assert sibling.health()["work_items"] == 0
     finally:
         if restricted is not None:

@@ -293,7 +293,7 @@ MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
         "cli_show_workflow_hidden",
         "cli.py",
         replace_once(
-            '        print(f"  workflow {item.workflow_name} v{item.workflow_version}")',
+            '        _human(f"  workflow {item.workflow_name} v{item.workflow_version}")',
             "        pass",
         ),
         "test_each_command[False-show]",
@@ -629,9 +629,12 @@ MUTANTS.extend(
             "or test_scoped_replay_ignores_other_damage",
         ),
         (
-            "absent_link_removal_silent",
+            "absent_link_removal_refuses",
             "kernel.py",
-            replace_once("if cur.rowcount == 0:", "if False:"),
+            method_replace("remove_link", '        self._conn.commit()',
+                           '        if cur.rowcount == 0:\n'
+                           '            raise InvalidFieldError("no such typed link")\n'
+                           '        self._conn.commit()'),
             "test_remove_absent_link",
         ),
         (
@@ -1146,6 +1149,68 @@ MUTANTS.extend(
     ]
 )
 
+
+MUTANTS.extend([
+    ("c1_special_names", "kernel.py",
+     replace_once('if schema == "$user" or schema.startswith("pg_") '
+                  'or schema == "information_schema":',
+                  'if False:'), "test_special_namespace_refused"),
+    ("c1_namespace_resolution", "kernel.py", body("_verify_namespace_name", "return"),
+     "test_namespace_resolution_verified or test_namespace_tampering_refuses_operation"),
+    ("c1_initializer_public_sql", "kernel.py",
+     replace_once("def initialize(self) -> None:",
+                  "def initialize(self, schema_sql_path: str | None = None) -> None:"),
+     "test_initializer_has_no_sql_path"),
+    ("c1_baseline_admission", "kernel.py", body("_validate_baseline", "return"),
+     "test_baseline_manifest_refuses_before_write"),
+    ("c1_expired_release", "kernel.py",
+     method_replace("release", "AND attempt_number = %s AND expires_at > clock_timestamp()",
+                    "AND attempt_number = %s"), "test_release_expired_preserves_fence"),
+    ("c1_release_lock", "kernel.py", method_replace("release",
+        '            cur.execute("SELECT work_item_id FROM work_items_current "\n'
+        '                        "WHERE work_item_id = %s FOR UPDATE", (work_item_id,))\n', ''),
+     "test_release_drains_transition"),
+    ("c1_unlink_retry", "kernel.py", method_replace("remove_link",
+        '        self._conn.commit()',
+        '        if cur.rowcount == 0:\n'
+        '            raise InvalidFieldError("no such typed link")\n'
+        '        self._conn.commit()'), "test_unlink_retry_and_concurrent_noop"),
+    ("c1_retry_materializes", "kernel.py", method_replace("_idempotency_result",
+        'with self._conn.cursor(name="kernel_idempotency") as rows:\n'
+        '            rows.itersize = 64', 'with self._conn.cursor() as rows:'),
+     "test_retry_memory_is_bounded"),
+    ("c1_transition_digest", "kernel.py",
+     body("_event_digest", "return _hash(_canonical(payload))"),
+     "test_replay_pinned_transition_semantics and False"),
+    ("c1_transition_source", "kernel.py",
+     replace_once('if payload["from"] not in froms:', 'if False:'),
+     "test_replay_pinned_transition_semantics and True"),
+    ("c1_transition_destination", "kernel.py",
+     replace_once('if payload["to"] != to:', 'if False:'), "test_replay_pinned_destination"),
+    ("c1_human_controls", "cli.py", body("_escape_human", "return str(value)"),
+     "test_cli_human_controls_escaped"),
+    ("c1_field_envelope", "cli.py", replace_once(
+        'raise InvalidFieldError(f"--field expects key=value, got {p!r}")',
+        'raise SystemExit(f"--field expects key=value, got {p!r}")'),
+     "test_cli_malformed_refusal and field"),
+    ("c1_json_envelope", "cli.py", replace_once(
+        'except (ValueError, RecursionError) as exc:', 'except ZeroDivisionError as exc:'),
+     "test_cli_malformed_refusal and (integer or depth)"),
+    ("c1_uuid_type", "cli.py", replace_once('s.add_argument("id", type=_uuid)',
+                                           's.add_argument("id")'),
+     "test_cli_uuid_arguments_are_typed"),
+    ("c1_fk_trigger_enforcement", "kernel.py", replace_once(
+        "t.tgisinternal,t.tgenabled,t.tgtype", "t.tgisinternal,'O',t.tgtype"),
+     "test_baseline_enforcement_and_inheritance and disabled_fk"),
+    ("c1_inheritance", "kernel.py", replace_once(
+        "WHERE inhparent IN (SELECT oid FROM relations)",
+        "WHERE false AND inhparent IN (SELECT oid FROM relations)"),
+     "test_baseline_enforcement_and_inheritance and inherited_child"),
+    ("c1_preliminary_parser", "cli.py", replace_once(
+        "probe = _RefusalParser(add_help=False)",
+        "probe = argparse.ArgumentParser(add_help=False)"),
+     "test_preliminary_cli_parser_refusal"),
+])
 
 def run(
     root: Path, selection: str, report: Path, *, timeout: int = 300,

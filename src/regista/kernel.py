@@ -235,7 +235,7 @@ REPLAY_COVERS = (
     "event payload hashes",
     "event chain links",
     "event sequence density",
-    "stored transition names against the pinned workflow version",
+    "stored transition names and source/destination rules against the pinned workflow version",
 )
 
 #: Parts of the store replay() CANNOT reconcile, because nothing appends an
@@ -535,6 +535,153 @@ def _hash(*parts: bytes) -> bytes:
     for p in parts:
         h.update(p)
     return h.digest()
+
+
+def _event_digest(transition: str | None, payload: dict[str, Any]) -> bytes:
+    """Bind the transition discriminator and payload; baseline-1 unpublished contract."""
+    return _hash(_canonical({"transition": transition, "payload": payload}))
+
+
+@functools.lru_cache(maxsize=1)
+def _baseline_manifest() -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(
+        files("regista").joinpath("baseline.manifest.json").read_text(encoding="utf-8")))
+
+
+def _load_schema_sql() -> str:
+    """Private test seam; production always loads and verifies the packaged resource."""
+    data = files("regista").joinpath("schema.sql").read_bytes()
+    if hashlib.sha256(data).hexdigest() != _baseline_manifest()["schema_sha256"]:
+        raise UnsupportedSchemaError("packaged schema differs from the pinned baseline")
+    return data.decode("utf-8")
+
+
+def _catalog_record(
+    conn: DictConn, schema: str, *, fingerprint: bool = False,
+) -> dict[str, Any]:
+    """One catalog round trip; no caching of mutable database admission evidence.
+
+    Namespace dependencies catch foreign object classes as well as relations.
+    Per-relation details cover columns/types/defaults, constraints, indexes,
+    triggers, rules, persistence and row-security. Ownership/grants are operator
+    configuration and deliberately excluded. OIDs and schema names are portable.
+    """
+    sql = """
+        WITH ns AS (SELECT oid, pg_catalog.quote_ident(nspname)||'.' AS prefix
+                    FROM pg_catalog.pg_namespace WHERE nspname=%s),
+        base_relations AS MATERIALIZED (
+          SELECT c.oid FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_class c ON c.oid=d.objid
+          WHERE d.refclassid='pg_catalog.pg_namespace'::pg_catalog.regclass
+            AND d.refobjid=(SELECT oid FROM ns)
+            AND d.classid='pg_catalog.pg_class'::pg_catalog.regclass
+        ),
+        relation_ids AS (
+          SELECT oid FROM base_relations UNION SELECT indexrelid FROM pg_catalog.pg_index
+          WHERE indrelid IN (SELECT oid FROM base_relations)
+        ),
+        relations AS MATERIALIZED (
+          SELECT c.oid,c.relname,c.relkind,c.relpersistence,c.relrowsecurity,
+                 c.relforcerowsecurity,c.reloptions,c.relispartition
+          FROM relation_ids ids JOIN pg_catalog.pg_class c ON c.oid=ids.oid
+        ),
+        columns AS (
+          SELECT a.attrelid AS relid, pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(
+            a.attnum,a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),
+            a.attnotnull,a.attisdropped,a.attidentity,a.attgenerated,
+            pg_catalog.pg_get_expr(def.adbin,def.adrelid),colns.nspname,col.collname
+          ) ORDER BY a.attnum) AS data
+          FROM pg_catalog.pg_attribute a
+          LEFT JOIN pg_catalog.pg_attrdef def ON def.adrelid=a.attrelid AND def.adnum=a.attnum
+          LEFT JOIN pg_catalog.pg_collation col ON col.oid=a.attcollation
+          LEFT JOIN pg_catalog.pg_namespace colns ON colns.oid=col.collnamespace
+          WHERE a.attnum>0 AND a.attrelid IN (
+            SELECT oid FROM relations WHERE relkind IN ('r','p')) GROUP BY a.attrelid
+        ),
+        constraints AS (
+          SELECT co.conrelid AS relid, pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(
+            co.conname,co.contype,co.convalidated,pg_catalog.pg_get_constraintdef(co.oid)
+          ) ORDER BY co.conname) AS data
+          FROM pg_catalog.pg_constraint co WHERE co.conrelid IN (SELECT oid FROM relations)
+          GROUP BY co.conrelid
+        ),
+        indexes AS (
+          SELECT idx.indrelid AS relid, pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(
+            ic.relname,idx.indisvalid,idx.indisready,idx.indislive,
+            pg_catalog.replace(pg_catalog.pg_get_indexdef(idx.indexrelid),
+                               (SELECT prefix FROM ns),'<schema>.')
+          ) ORDER BY ic.relname) AS data
+          FROM pg_catalog.pg_index idx JOIN pg_catalog.pg_class ic ON ic.oid=idx.indexrelid
+          WHERE idx.indrelid IN (SELECT oid FROM relations) GROUP BY idx.indrelid
+        ),
+        triggers AS (
+          SELECT t.tgrelid AS relid, pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(
+            COALESCE(co.conname,t.tgname),t.tgisinternal,t.tgenabled,t.tgtype,
+            t.tgdeferrable,t.tginitdeferred,fnns.nspname,fn.proname,
+            CASE WHEN t.tgisinternal THEN NULL ELSE pg_catalog.pg_get_triggerdef(t.oid) END
+          ) ORDER BY COALESCE(co.conname,t.tgname),t.tgtype,fn.proname) AS data
+          FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc fn ON fn.oid=t.tgfoid
+          JOIN pg_catalog.pg_namespace fnns ON fnns.oid=fn.pronamespace
+          LEFT JOIN pg_catalog.pg_constraint co ON co.oid=t.tgconstraint
+          WHERE t.tgrelid IN (SELECT oid FROM relations) GROUP BY t.tgrelid
+        ),
+        rules AS (
+          SELECT rw.ev_class AS relid, pg_catalog.jsonb_agg(
+                   pg_catalog.pg_get_ruledef(rw.oid) ORDER BY rw.rulename) AS data
+          FROM pg_catalog.pg_rewrite rw WHERE rw.ev_class IN (SELECT oid FROM relations)
+          GROUP BY rw.ev_class
+        ),
+        policies AS (
+          SELECT polrelid AS relid,count(*) AS count FROM pg_catalog.pg_policy
+          WHERE polrelid IN (SELECT oid FROM relations) GROUP BY polrelid
+        )
+        SELECT pg_catalog.jsonb_build_object(
+          'inheritance_count', (SELECT count(*) FROM pg_catalog.pg_inherits
+            WHERE inhparent IN (SELECT oid FROM relations)
+               OR inhrelid IN (SELECT oid FROM relations)),
+          'objects', COALESCE((
+            SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(i.type,i.name)
+                                       ORDER BY i.type,i.name)
+            FROM pg_catalog.pg_depend d JOIN ns ON d.refobjid=ns.oid
+            CROSS JOIN LATERAL pg_catalog.pg_identify_object(d.classid,d.objid,d.objsubid) i
+            WHERE d.refclassid='pg_catalog.pg_namespace'::pg_catalog.regclass
+          ),'[]'::pg_catalog.jsonb),
+          'relations', COALESCE((
+            SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+              'name',r.relname,'kind',r.relkind,'persistence',r.relpersistence,
+              'rls',r.relrowsecurity,'force_rls',r.relforcerowsecurity,
+              'options',r.reloptions,'is_partition',r.relispartition,
+              'columns',COALESCE(cols.data,'[]'::pg_catalog.jsonb),
+              'constraints',COALESCE(cons.data,'[]'::pg_catalog.jsonb),
+              'indexes',COALESCE(idx.data,'[]'::pg_catalog.jsonb),
+              'triggers',COALESCE(trig.data,'[]'::pg_catalog.jsonb),
+              'rules',COALESCE(rules.data,'[]'::pg_catalog.jsonb),
+              'policy_count',COALESCE(pol.count,0)
+            ) ORDER BY r.relname)
+            FROM relations r LEFT JOIN columns cols ON cols.relid=r.oid
+            LEFT JOIN constraints cons ON cons.relid=r.oid LEFT JOIN indexes idx ON idx.relid=r.oid
+            LEFT JOIN triggers trig ON trig.relid=r.oid LEFT JOIN rules ON rules.relid=r.oid
+            LEFT JOIN policies pol ON pol.relid=r.oid
+          ),'[]'::pg_catalog.jsonb)
+        ) AS manifest
+        """
+    if fingerprint:
+        # Return 64 ASCII bytes instead of deserializing the complete catalog on
+        # each write. This is equality evidence, not an authenticity mechanism.
+        sql = ("SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+               "manifest::pg_catalog.text,'UTF8')),'hex') AS fingerprint ") + (
+            "FROM (" + sql + ") AS catalog")
+    row = conn.execute(sql, (schema,)).fetchone()
+    if row is None:
+        raise UnsupportedSchemaError("baseline catalog returned no result")
+    return row
+
+
+def _catalog_manifest(conn: DictConn, schema: str) -> dict[str, Any]:
+    return cast(dict[str, Any], _catalog_record(conn, schema)["manifest"])
+
+
+def _catalog_fingerprint(conn: DictConn, schema: str) -> str:
+    return cast(str, _catalog_record(conn, schema, fingerprint=True)["fingerprint"])
 
 
 #: Keys the 0.7 workflow schema accepted that this dialect does not, each with
@@ -1286,6 +1433,8 @@ class Kernel:
         API, so the CLI and examples need no lifecycle changes.
         """
         _check_name(schema, "schema", MAX_NAMESPACE_BYTES)
+        if schema == "$user" or schema.startswith("pg_") or schema == "information_schema":
+            raise InvalidFieldError(f"reserved PostgreSQL schema name: {schema!r}")
         if pool_min_size < 0 or pool_max_size < 1 or pool_min_size > pool_max_size:
             raise PoolConfigurationError(
                 "pool bounds require 0 <= pool_min_size <= pool_max_size and "
@@ -1320,6 +1469,8 @@ class Kernel:
             # Reassert it on EVERY checkout; SET LOCAL below independently scopes
             # the operation, while this session scope serves rollback-first paths.
             conn.execute(SQL("SET search_path TO {}").format(Identifier(schema)))
+            # Resolve/refuse in _begin_operation, where the pool cannot swallow
+            # a schema refusal as a health-check failure and retry until timeout.
             conn.commit()
 
         pool: ConnectionPool[DictConn] | None = None
@@ -1379,10 +1530,12 @@ class Kernel:
         # explicit namespace: current_schema() is NULL without USAGE privilege.
         objects = conn.execute(
             "SELECT c.relname AS object_name, c.relkind::text AS object_kind "
-            "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
             "WHERE n.nspname=%s "
-            "UNION ALL SELECT p.proname, 'function' FROM pg_proc p "
-            "JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=%s",
+            "UNION ALL SELECT COALESCE(i.name,i.identity), i.type FROM pg_catalog.pg_depend d "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=d.refobjid "
+            "CROSS JOIN LATERAL pg_catalog.pg_identify_object(d.classid,d.objid,d.objsubid) i "
+            "WHERE d.refclassid='pg_catalog.pg_namespace'::regclass AND n.nspname=%s",
             (schema, schema),
         ).fetchall()
         names = {row["object_name"] for row in objects}
@@ -1399,7 +1552,17 @@ class Kernel:
 
     @_pooled_operation(access="read")
     def _check_destination(self) -> None:
-        self._refuse_legacy_schema(self._conn, self._schema)
+        tables = self._refuse_legacy_schema(self._conn, self._schema)
+        if "kernel_meta" in tables:
+            # Keep unsupported-version diagnostic reads available (A5).
+            try:
+                row = self._conn.execute(SQL(
+                    "SELECT kernel_schema_version FROM {}.kernel_meta").format(
+                        Identifier(self._schema))).fetchone()
+            except psycopg.errors.UndefinedColumn as exc:
+                raise UnsupportedSchemaError("malformed kernel baseline version marker") from exc
+            if row and row["kernel_schema_version"] == KERNEL_SCHEMA_VERSION:
+                self._validate_baseline(self._conn)
         self._end_read()
 
     @_pooled_operation(access="read")
@@ -1444,10 +1607,37 @@ class Kernel:
 
     def _begin_operation(self, conn: DictConn) -> None:
         try:
-            conn.execute(SQL("SET LOCAL search_path TO {}").format(Identifier(self._schema)))
+            conn.execute(SQL("SET LOCAL search_path TO {}").format(
+                Identifier(self._schema)))
+            self._verify_namespace(conn, allow_missing=True)
         except BaseException:
             self._clean_connection(conn)
             raise
+
+    @staticmethod
+    def _verify_namespace_name(
+        conn: DictConn, schema: str, *, allow_missing: bool = False,
+    ) -> None:
+        row = conn.execute(
+            "SELECT pg_catalog.current_schema() AS effective, "
+            "pg_catalog.current_schemas(false) AS path, "
+            "EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname=%s) AS present, "
+            "pg_catalog.pg_my_temp_schema() AS temp_oid", (schema,),
+        ).fetchone()
+        if row is None:
+            raise UnsupportedSchemaError("namespace resolution returned no result")
+        if (allow_missing and not row["present"] and row["path"] == []
+                and row["temp_oid"] == 0):
+            return  # Catalog-only bootstrap; no unqualified relation SQL is permitted.
+        if (row["effective"] != schema or row["path"] != [schema]
+                or row["temp_oid"] != 0):
+            raise UnsupportedSchemaError(
+                f"effective namespace does not match configured literal schema {schema!r}; "
+                "nothing was changed"
+            )
+
+    def _verify_namespace(self, conn: DictConn, *, allow_missing: bool = False) -> None:
+        self._verify_namespace_name(conn, self._schema, allow_missing=allow_missing)
 
     @staticmethod
     def _clean_connection(conn: DictConn) -> None:
@@ -1462,42 +1652,24 @@ class Kernel:
             except BaseException:
                 pass
 
-    @staticmethod
-    def _require_writable_schema(conn: DictConn) -> None:
-        """Refuse unsupported destinations before any public mutation.
-
-        Opening a pool is also needed for initialize() and diagnostic reads, so
-        those remain possible. A caller omitting initialize() must never write
-        through an unknown/empty schema-version marker.
-        """
-        try:
-            # Fold refusal into the version read the write already needs. Check
-            # on every write: another session can add an old marker after open.
-            row = conn.execute(
-                "SELECT kernel_schema_version, NOT EXISTS ("
-                "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
-                "WHERE n.nspname=current_schema() AND c.relname IN "
-                "('_regista_migrations','_substrate_migrations',"
-                "'project_identity','principal_keys') "
-                "UNION ALL SELECT 1 FROM pg_proc p "
-                "JOIN pg_namespace n ON n.oid=p.pronamespace "
-                "WHERE n.nspname=current_schema() AND p.proname IN "
-                "('_regista_migrations','_substrate_migrations','project_identity','principal_keys')"
-                ") AS destination_supported FROM kernel_meta"
-            ).fetchone()
-        except psycopg.errors.UndefinedTable as exc:
-            raise UnsupportedSchemaError(
-                "kernel schema is not initialized; nothing was changed"
-            ) from exc
+    def _require_writable_schema(self, conn: DictConn) -> None:
+        """Validate the complete baseline on every write, including catalog drift."""
+        self._verify_namespace(conn)
+        self._validate_baseline(conn)
+        row = conn.execute(SQL("SELECT kernel_schema_version FROM {}.kernel_meta").format(
+            Identifier(self._schema))).fetchone()
         found = row["kernel_schema_version"] if row else None
-        if row and not row["destination_supported"]:
-            raise UnsupportedSchemaError(
-                "destination contains legacy objects; nothing was changed"
-            )
         if found != KERNEL_SCHEMA_VERSION:
             raise UnsupportedSchemaError(
                 f"kernel schema version {found} is not writable by this build "
                 f"(supported: {KERNEL_SCHEMA_VERSION}); nothing was changed"
+            )
+
+    def _validate_baseline(self, conn: DictConn) -> None:
+        expected = _baseline_manifest()["catalog_fingerprint"]
+        if _catalog_fingerprint(conn, self._schema) != expected:
+            raise UnsupportedSchemaError(
+                "destination does not match the complete kernel baseline; nothing was changed"
             )
 
     def _end_read(self) -> None:
@@ -1528,12 +1700,12 @@ class Kernel:
         guarantee.
         """
         cur.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(%s, 0))",
             (f"regista-kernel:{self._schema}:{namespace}:{value}",),
         )
 
     @_pooled_operation(access="initialize")
-    def initialize(self, schema_sql_path: str | None = None) -> None:
+    def initialize(self) -> None:
         """Create the kernel schema in an empty destination.
 
         Distinguishes the three cases Plan 032 F1 requires: a supported new
@@ -1546,6 +1718,7 @@ class Kernel:
             self._transaction_lock(cur, "initialize", self._schema)
             tables = self._refuse_legacy_schema(self._conn, self._schema)
             if "kernel_meta" in tables:
+                self._validate_baseline(self._conn)
                 cur.execute("SELECT kernel_schema_version FROM kernel_meta")
                 row = cur.fetchone()
                 found = row["kernel_schema_version"] if row else None
@@ -1574,11 +1747,12 @@ class Kernel:
                     "database and keep the old one for reference."
                 )
 
-            if schema_sql_path is None:
-                sql = files("regista").joinpath("schema.sql").read_text(encoding="utf-8")
-            else:
-                with open(schema_sql_path, encoding="utf-8") as fh:
-                    sql = fh.read()
+            # Namespace creation is transactional and follows occupied-destination refusal.
+            cur.execute("SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname=%s", (self._schema,))
+            if cur.fetchone() is None:
+                cur.execute(SQL("CREATE SCHEMA {}").format(Identifier(self._schema)))
+            self._verify_namespace(self._conn)
+            sql = _load_schema_sql()
             cur.execute(sql)
             cur.execute(
                 "INSERT INTO kernel_meta (kernel_schema_version) VALUES (%s)",
@@ -2057,15 +2231,20 @@ class Kernel:
         """Release a lease. Takes the primitive rather than a Claim, so a CLI
         holding only (id, actor, attempt) can call it without fabricating one.
 
-        Releasing an already-dead or already-replaced lease is a no-op, not a
+        Locks the item first, draining an already-fenced in-flight transition.
+        Deletes only a live matching lease; expiry remains fenced until takeover
+        or an explicit sweep. Releasing an already-dead or replaced lease is a no-op, not a
         refusal: release is cleanup, and cleanup that raises makes callers wrap
         it in a bare except.
         """
         _check_name(actor_id, "actor_id")
         with self._conn.cursor() as cur:
+            # Item first: wait for an already-fenced transition before releasing.
+            cur.execute("SELECT work_item_id FROM work_items_current "
+                        "WHERE work_item_id = %s FOR UPDATE", (work_item_id,))
             cur.execute(
                 "DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s "
-                "AND attempt_number = %s",
+                "AND attempt_number = %s AND expires_at > clock_timestamp()",
                 (work_item_id, actor_id, attempt),
             )
         self._conn.commit()
@@ -2162,31 +2341,33 @@ class Kernel:
             )
 
         target_seq = int(prior["event_seq"])
-        cur.execute(
-            "SELECT event_seq, transition, payload FROM events "
-            "WHERE work_item_id = %s AND event_seq <= %s ORDER BY event_seq",
-            (prior["work_item_id"], target_seq),
-        )
-        rows = cur.fetchall()
-        if not rows or int(rows[-1]["event_seq"]) != target_seq:
+        state = ""
+        fields: dict[str, Any] = {}
+        last_seq = -1
+        with self._conn.cursor(name="kernel_idempotency") as rows:
+            rows.itersize = 64
+            rows.execute(
+                "SELECT event_seq, transition, payload FROM events "
+                "WHERE work_item_id = %s AND event_seq <= %s ORDER BY event_seq",
+                (prior["work_item_id"], target_seq),
+            )
+            for row in rows:
+                last_seq = int(row["event_seq"])
+                event_payload = row["payload"]
+                _validate_event_payload(event_payload, creation=row["transition"] is None)
+                if row["transition"] is None:
+                    created = event_payload.get("created", {})
+                    state = created.get("state", "")
+                    fields = dict(created.get("fields", {}))
+                else:
+                    state = event_payload.get("to", state)
+                    fields.update(event_payload.get("fields", {}))
+                    for cleared in event_payload.get("unset", ()):
+                        fields.pop(cleared, None)
+        if last_seq != target_seq:
             raise KernelError(
                 f"idempotency key {idempotency_key!r} cannot reconstruct its original result"
             )
-
-        state = ""
-        fields: dict[str, Any] = {}
-        for row in rows:
-            event_payload = row["payload"]
-            _validate_event_payload(event_payload, creation=row["transition"] is None)
-            if row["transition"] is None:
-                created = event_payload.get("created", {})
-                state = created.get("state", "")
-                fields = dict(created.get("fields", {}))
-            else:
-                state = event_payload.get("to", state)
-                fields.update(event_payload.get("fields", {}))
-                for cleared in event_payload.get("unset", ()):
-                    fields.pop(cleared, None)
 
         return WorkItem(
             prior["work_item_id"], prior["workflow_name"],
@@ -2478,7 +2659,7 @@ class Kernel:
             _hash(bytes(prev["payload_hash"]), bytes(prev["prev_event_hash"] or b""))
             if prev else None
         )
-        payload_hash = _hash(_canonical(payload))
+        payload_hash = _event_digest(transition, payload)
         event_id = uuid.uuid4()
         cur.execute(
             "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
@@ -2517,13 +2698,11 @@ class Kernel:
 
     @_pooled_operation(access="write")
     def remove_link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
-        """Remove an explicit relationship; refuse an absent one. Outside replay."""
+        """Remove an explicit relationship; absence is a successful no-op. Outside replay."""
         _check_name(link_type, "link_type")
         with self._conn.cursor() as cur:
             cur.execute("DELETE FROM links WHERE source_id = %s AND target_id = %s "
                         "AND link_type = %s", (source, target, link_type))
-            if cur.rowcount == 0:
-                raise InvalidFieldError("no such typed link")
         self._conn.commit()
 
     @_pooled_operation(access="read")
@@ -2656,9 +2835,10 @@ class Kernel:
         """Items with at least one linked counterpart that is NOT yet satisfied.
 
         The one link-aware query. SINGLE HOP ONLY: it looks at an item's direct
-        counterparts and stops. It does not walk a chain, so an item whose
-        blocker is itself blocked is not reported here; ask again about the
-        blocker. There is no transitive closure and there will not be one --
+        counterparts and stops. Only the immediate counterpart's state is
+        inspected. A downstream item is reported when that counterpart is
+        unsatisfied, including when the counterpart is itself blocked.
+        There is no transitive closure and there will not be one --
         Plan 032 permits state-based blocked queries and forbids a dependency
         scheduler, and recursion is how a query becomes one.
 
@@ -2928,7 +3108,8 @@ class Kernel:
 
         What is checked, exactly -- the whole of the supported projection, not
         just the state:
-          * every event's payload against its recorded payload_hash;
+          * every event's transition and payload against its recorded payload_hash;
+          * source/destination against the pinned workflow transition rule;
           * every chain link against its predecessor;
           * sequence numbers dense from 0;
           * replayed state vs current_state;
@@ -3002,7 +3183,7 @@ class Kernel:
                     # Chain verification is independent of whether the reducer
                     # can use this payload. Keep checking the remaining events.
                     try:
-                        if bytes(r["payload_hash"]) != _hash(_canonical(payload)):
+                        if bytes(r["payload_hash"]) != _event_digest(r["transition"], payload):
                             drift.append(f"event {seq}: payload does not match its hash")
                     except (TypeError, ValueError, OverflowError, RecursionError):
                         drift.append(f"event {seq}: payload cannot be hashed")
@@ -3024,6 +3205,14 @@ class Kernel:
                         if wf is not None and r["transition"] not in wf.transitions:
                             drift.append(f"event {seq}: unknown transition {r['transition']!r} "
                                          f"for {wf.name} v{wf.version}")
+                        if wf is not None and r["transition"] in wf.transitions:
+                            froms, to = wf.transitions[r["transition"]]
+                            if payload["from"] not in froms:
+                                drift.append(f"event {seq}: source state is forbidden by "
+                                             "the pinned transition")
+                            if payload["to"] != to:
+                                drift.append(f"event {seq}: destination disagrees with "
+                                             "the pinned transition")
                         if payload.get("from") != state:
                             drift.append(
                                 f"event {seq} leaves {payload.get('from')!r} "

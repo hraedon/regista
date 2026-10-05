@@ -376,7 +376,7 @@ def test_projection_summary_visible_a5(registered: Kernel, dsn: str, schema: str
     assert any("projection says" in line for line in drift)
     assert any("fields disagree" in line for line in drift)
     assert any("projection's last_event_seq" in line for line in drift)
-    assert drift[-1] == "14 additional drift diagnostics omitted"
+    assert drift[-1] == "125 additional drift diagnostics omitted"
 
 
 def test_history_unknown_a5(registered: Kernel, dsn: str, schema: str) -> None:

@@ -9,8 +9,9 @@ pip install regista-hraedon
 ```
 
 0.8.0 requires Python 3.11 or newer and PostgreSQL (qualified on PostgreSQL 15).
-Provision a database and a role with permission to create and use its project
-schema. Set `REGISTA_DSN` to its connection string; this example uses a fresh
+Provision a database and a role with database `CREATE` privilege (or a pre-created,
+owned project schema). `initialize()` creates an absent namespace transactionally
+and validates an existing complete baseline before accepting it. Set `REGISTA_DSN` to its connection string; this example uses a fresh
 `tasks` schema. Creating service roles is the operator's job.
 
 ```python

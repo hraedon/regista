@@ -339,7 +339,7 @@ def test_cli_unlink(registered: Kernel, dsn: str, schema: str, as_json: bool) ->
     result = cli(dsn, schema, ["unlink", str(a.id), str(b.id), "--type", "blocks"], as_json)
     assert result.returncode == 0 and registered.links_from(a.id) == []
     missing = cli(dsn, schema, ["unlink", str(a.id), str(b.id), "--type", "blocks"], as_json)
-    assert missing.returncode == 2
+    assert missing.returncode == 0 and registered.links_from(a.id) == []
 
 
 def test_cli_fresh_init(dsn: str, schema: str) -> None:

@@ -313,7 +313,7 @@ def test_replay_diagnostics_bounded_a4(registered: Kernel, dsn: str, schema: str
         )
     drift = registered.replay(work_id)[2]
     assert len(drift) == 101
-    assert "25 additional drift diagnostics omitted" == drift[-1]
+    assert "150 additional drift diagnostics omitted" == drift[-1]
     assert next(registered.replay_all()).drift == drift
 
 

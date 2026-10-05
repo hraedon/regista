@@ -37,7 +37,11 @@ Existing unsupported kernel versions remain diagnostic-readable but reject write
 and initialization. There is **no in-place upgrade from 0.7.2 or earlier**, reset,
 or converter. Package resources supply `schema.sql` and `workflow.schema.json`.
 The operator provisions service roles and grants privileges; dropping a project is
-manual `DROP SCHEMA`. Schema names cannot redirect queries to another namespace.
+manual `DROP SCHEMA`. Schema names cannot redirect queries to another namespace. Special `$user`, `pg_*`
+and `information_schema` names refuse; every checkout/operation verifies literal
+namespace resolution. `initialize()` creates an absent schema transactionally and
+always loads pinned package SQL, with no SQL-path parameter. Existing baseline 1
+must match the complete committed catalog manifest; every write rechecks it.
 
 ## Workflows and work items
 

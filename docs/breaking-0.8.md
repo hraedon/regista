@@ -50,95 +50,202 @@ backup; no supported replay rebuild exists. See the trust/recovery limitations
 in [operations.md](operations.md). Retiring a vulnerable subsystem does not fix
 any older release that shipped it.
 
-## Explicit removed root exports
+## Mechanically generated 0.7.2 → 0.8.0 inventory
 
-The following formerly explicit root re-exports at the pre-cutover reference
-`84bb2ec` are absent (the old `Regista` class and its facade methods are also
-removed). Names such as `Claim` and `Event` that remain have new result shapes;
-name overlap does not promise old signatures or semantics.
+Generated from `84bb2ec:src/regista/__init__.py`, its complete CLI parser
+and the current root/parser by `scripts/generate_removal_inventory.py`.
+The [complete machine-readable comparison](breaking-0.8-inventory.json)
+also lists every added name/path. Retained spelling does not preserve the
+old contract.
 
-`ActionDelegationCredential`, `ActionDelegationError`, `ActionDelegationScope`, `ActorKind`, `ActorMetadata`, `ActorRole`, `Applicability`, `Approval`, `ApprovalVerifier`, `AssuranceLevel`, `AuthorizationEvidence`, `BundleReferents`, `ChallengeStorageScope`, `CustodyMode`, `DeadLetterEntry`, `DelegationVerificationStatus`, `EffectiveReceipt`, `EffectiveReceiptStatus`, `EnrollmentRequest`, `EnvelopeVersion`, `GateProfile`, `GenesisRecovery`, `HookContext`, `LifecycleAuthority`, `LifecycleAuthorityKind`, `LifecycleContractError`, `LifecycleDigest`, `LifecycleErrorCode`, `LifecycleOperation`, `LifecycleOperationType`, `LifecycleState`, `LineageRelation`, `Link`, `MODEL_LINEAGE_FAMILIES`, `NO_REFERENTS`, `PossessionChallenge`, `PossessionProof`, `PrincipalDescriptor`, `PrincipalKind`, `PrincipalLifecycle`, `Producer`, `ProjectCatalogEntry`, `ProofFormat`, `QueryPage`, `ReconciliationReport`, `ReconciliationStatus`, `RegistryReceipt`, `RegistryReceiptStatus`, `ReplayReport`, `ReplayReportEntry`, `RevocationRequest`, `RotationRequest`, `TrustLogVerificationReport`, `V6GenesisWrite`, `ValidationError`, `ValidationResult`, `VerificationPolicy`, `VerificationResult`, `VerifiedActionDelegation`, `VersionInfo`, `WorkflowDefinition`, `WorkflowVersion`, `_config`, `action_delegation_hash`, `bundle_referents`, `canonical_lifecycle_digest`, `canonical_workflow_yaml`, `chain_head_hash`, `compose_workflow`, `compute_assurance_level`, `gate_rationale`, `lineage_relation`, `make_verification_policy`, `parse_action_delegation`, `parse_and_validate`, `parse_file`, `parse_workflow_yaml`, `resolve_producer`, `same_lineage`, `secrets`, `validate_principal_id`, `validate_yaml`, `verify_event_with_referents`, `versions`.
+### Old public root names
 
-## Explicit removed command paths
+| Name | 0.8.0 disposition |
+| --- | --- |
+| `ActionDelegationCredential` | removed |
+| `ActionDelegationError` | removed |
+| `ActionDelegationScope` | removed |
+| `ActorKind` | removed |
+| `ActorMetadata` | removed |
+| `ActorRole` | removed |
+| `Applicability` | removed |
+| `Approval` | removed |
+| `ApprovalVerifier` | removed |
+| `AssuranceLevel` | removed |
+| `AuthorizationEvidence` | removed |
+| `BundleReferents` | removed |
+| `ChallengeStorageScope` | removed |
+| `Claim` | retained name; changed kernel contract |
+| `ConnectionInfo` | removed |
+| `CustodyMode` | removed |
+| `DeadLetterEntry` | removed |
+| `DelegationVerificationStatus` | removed |
+| `EffectiveReceipt` | removed |
+| `EffectiveReceiptStatus` | removed |
+| `EnrollmentRequest` | removed |
+| `EnvelopeVersion` | removed |
+| `ErrorCode` | removed |
+| `Event` | retained name; changed kernel contract |
+| `GateProfile` | removed |
+| `GenesisRecovery` | removed |
+| `HookContext` | removed |
+| `LifecycleAuthority` | removed |
+| `LifecycleAuthorityKind` | removed |
+| `LifecycleContractError` | removed |
+| `LifecycleDigest` | removed |
+| `LifecycleErrorCode` | removed |
+| `LifecycleOperation` | removed |
+| `LifecycleOperationType` | removed |
+| `LifecycleState` | removed |
+| `LineageRelation` | removed |
+| `Link` | removed |
+| `MODEL_LINEAGE_FAMILIES` | removed |
+| `NO_REFERENTS` | removed |
+| `PossessionChallenge` | removed |
+| `PossessionProof` | removed |
+| `PrincipalDescriptor` | removed |
+| `PrincipalKind` | removed |
+| `PrincipalLifecycle` | removed |
+| `Producer` | removed |
+| `ProjectCatalogEntry` | removed |
+| `ProofFormat` | removed |
+| `QueryPage` | removed |
+| `REGISTA_VERSION` | removed |
+| `ReconciliationReport` | removed |
+| `ReconciliationStatus` | removed |
+| `Regista` | removed |
+| `RegistaError` | removed |
+| `RegistryReceipt` | removed |
+| `RegistryReceiptStatus` | removed |
+| `ReplayReport` | removed |
+| `ReplayReportEntry` | removed |
+| `RevocationRequest` | removed |
+| `RotationRequest` | removed |
+| `TrustLogVerificationReport` | removed |
+| `V6GenesisWrite` | removed |
+| `ValidationError` | removed |
+| `ValidationResult` | removed |
+| `VerificationPolicy` | removed |
+| `VerificationResult` | removed |
+| `VerifiedActionDelegation` | removed |
+| `VersionInfo` | removed |
+| `WorkItem` | retained name; changed kernel contract |
+| `WorkflowDefinition` | removed |
+| `WorkflowVersion` | removed |
+| `action_delegation_hash` | removed |
+| `bundle_referents` | removed |
+| `canonical_lifecycle_digest` | removed |
+| `canonical_workflow_yaml` | removed |
+| `chain_head_hash` | removed |
+| `compose_workflow` | removed |
+| `compute_assurance_level` | removed |
+| `config` | removed |
+| `gate_rationale` | removed |
+| `lineage_relation` | removed |
+| `make_verification_policy` | removed |
+| `parse_action_delegation` | removed |
+| `parse_and_validate` | removed |
+| `parse_file` | removed |
+| `parse_workflow_yaml` | removed |
+| `resolve_producer` | removed |
+| `same_lineage` | removed |
+| `secrets` | removed |
+| `validate_principal_id` | removed |
+| `validate_yaml` | removed |
+| `verify_event_with_referents` | removed |
+| `versions` | removed |
 
-The old parser at `84bb2ec` defined the paths below; none is accepted by the new
-parser. The supported workflow register/validate/list/show paths use the new
-workflow format and flags. Current participation is through top-level create,
-show, list, claim, heartbeat, lease, release, transition, link/unlink and history;
-there is no alias for the old nested command or a projection-rebuilding replay.
+### Old full command tree
 
-- `work-item`
-- `work-item show`
-- `work-item list`
-- `events`
-- `events show`
-- `events tail`
-- `events archive`
-- `bundle`
-- `bundle export`
-- `bundle verify`
-- `replay`
-- `schema`
-- `hooks`
-- `hooks dead-letter`
-- `hooks dead-letter list`
-- `hooks dead-letter requeue`
-- `actor-roles`
-- `actor-roles list`
-- `recurrence`
-- `recurrence list`
-- `recurrence fire`
-- `recurrence cancel`
-- `recurrence update`
-- `witness`
-- `witness list`
-- `witness deliver`
-- `witness receipts`
-- `workflow compose`
-- `work-item create`
-- `work-item transition`
-- `webhook`
-- `webhook register`
-- `webhook list`
-- `webhook remove`
-- `version`
-- `doctor`
-- `config`
-- `secrets`
-- `keys`
-- `keys fingerprint`
-- `keys adopt-enrollment`
-- `assurance`
-- `invariants`
-- `invariants probe`
-- `principal`
-- `principal list`
-- `principal register`
-- `principal rotate`
-- `principal enroll`
-- `principal resolve-backend-name`
-- `principal revoke`
-- `signer`
-- `signer generate`
-- `signer sign-possession`
-- `signer sign-effective`
-- `provision`
-- `provision-principal`
-- `trust`
-- `trust sign-genesis`
-- `trust verify-genesis`
-- `trust rebuild-projection`
-- `trust init-log`
-- `trust enroll`
-- `trust delegate-registrar`
-- `trust publish-log`
-- `trust sign-log`
-- `trust verify-log`
-- `trust catalog`
-- `trust sign-catalog`
-- `trust verify-catalog`
-- `genesis`
-- `genesis init`
-- `spec`
-- `spec sign`
-- `spec events`
+| Full path | 0.8.0 disposition |
+| --- | --- |
+| `actor-roles` | removed |
+| `actor-roles list` | removed |
+| `assurance` | removed |
+| `bundle` | removed |
+| `bundle export` | removed |
+| `bundle verify` | removed |
+| `config` | removed |
+| `doctor` | removed |
+| `events` | removed |
+| `events archive` | removed |
+| `events show` | removed |
+| `events tail` | removed |
+| `genesis` | removed |
+| `genesis init` | removed |
+| `hooks` | removed |
+| `hooks dead-letter` | removed |
+| `hooks dead-letter list` | removed |
+| `hooks dead-letter requeue` | removed |
+| `invariants` | removed |
+| `invariants probe` | removed |
+| `keys` | removed |
+| `keys adopt-enrollment` | removed |
+| `keys fingerprint` | removed |
+| `principal` | removed |
+| `principal enroll` | removed |
+| `principal list` | removed |
+| `principal register` | removed |
+| `principal resolve-backend-name` | removed |
+| `principal revoke` | removed |
+| `principal rotate` | removed |
+| `provision` | removed |
+| `provision-principal` | removed |
+| `recurrence` | removed |
+| `recurrence cancel` | removed |
+| `recurrence due` | removed |
+| `recurrence fire` | removed |
+| `recurrence list` | removed |
+| `recurrence update` | removed |
+| `replay` | removed |
+| `schema` | removed |
+| `schema init` | removed |
+| `schema repair-checksums` | removed |
+| `schema status` | removed |
+| `secrets` | removed |
+| `signer` | removed |
+| `signer generate` | removed |
+| `signer sign-effective` | removed |
+| `signer sign-possession` | removed |
+| `spec` | removed |
+| `spec events` | removed |
+| `spec sign` | removed |
+| `trust` | removed |
+| `trust catalog` | removed |
+| `trust delegate-registrar` | removed |
+| `trust enroll` | removed |
+| `trust init-log` | removed |
+| `trust publish-log` | removed |
+| `trust rebuild-projection` | removed |
+| `trust sign-catalog` | removed |
+| `trust sign-genesis` | removed |
+| `trust sign-log` | removed |
+| `trust verify-catalog` | removed |
+| `trust verify-genesis` | removed |
+| `trust verify-log` | removed |
+| `version` | removed |
+| `webhook` | removed |
+| `webhook list` | removed |
+| `webhook register` | removed |
+| `webhook remove` | removed |
+| `witness` | removed |
+| `witness deliver` | removed |
+| `witness list` | removed |
+| `witness receipts` | removed |
+| `work-item` | removed |
+| `work-item create` | removed |
+| `work-item list` | removed |
+| `work-item show` | removed |
+| `work-item transition` | removed |
+| `workflow` | retained spelling; changed kernel format/contract |
+| `workflow compose` | removed |
+| `workflow validate` | retained spelling; changed kernel format/contract |
+
+### Intentional implementation bindings
+
+These bindings in the old root implement the facade or support imports;
+they are not deliberate API re-exports. Underscore names are private.
+They are tracked separately, including `_config`; its public alias `config`
+appears in the API table above.
+
+`Any`, `ArchiveOps`, `AssuranceOps`, `AsyncApiMixin`, `Callable`, `ClaimApiMixin`, `ClaimOps`, `ConnectionManager`, `EventOps`, `ExternalApiMixin`, `GenesisApiMixin`, `HookOps`, `KeySet`, `LinkOps`, `MetaApiMixin`, `Metrics`, `PrincipalKeyOps`, `RecurrenceOps`, `TracebackType`, `WebhookOps`, `WitnessOps`, `WorkItemOps`, `WorkflowApiMixin`, `WorkflowOps`, `_load_trust_genesis_document`, `_sys`, `_trust_genesis_path_from_env`, `annotations`, `check_integrity`, `log`, `run_migrations`, `structlog`

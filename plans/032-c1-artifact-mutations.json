@@ -1,0 +1,77 @@
+[
+  {
+    "mutant": "gzip_tar_envelope",
+    "failures": [
+      "tests.test_distribution_vectors::test_c1_sdist_envelope_refuses_trailers[gzip]",
+      "tests.test_distribution_vectors::test_c1_sdist_envelope_refuses_trailers[tar-data]",
+      "tests.test_distribution_vectors::test_c1_sdist_envelope_refuses_trailers[tar-zero]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "sdist_metadata_binding",
+    "failures": [
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Summary-altered]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Requires-Python->=99]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Requires-Dist-counterfeit-dependency]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Classifier-Counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Project-URL-Counterfeit, https://example.invalid]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Author-email-counterfeit@example.invalid]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-Counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Provides-Extra-counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Description-Content-Type-text/plain]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Metadata-Version-2.1]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Description-altered readme]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "sdist_root_binding",
+    "failures": [
+      "tests.test_distribution_vectors::test_c1_sdist_root_is_bound"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "ci_permissions",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[ci]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_uv_latest",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[publish]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_uv_checksum",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[publish]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "ci_mutable_action",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[ci]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_identifier_gate",
+    "failures": [
+      "tests.test_c1_workflows::test_publish_requires_identifier_and_merged_commit"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_main_ancestry",
+    "failures": [
+      "tests.test_c1_workflows::test_publish_requires_identifier_and_merged_commit"
+    ],
+    "exit_code": 1
+  }
+]
