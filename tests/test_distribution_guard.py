@@ -79,8 +79,8 @@ def test_distribution_guard_requires_nonempty_pin(tmp_path: Path) -> None:
 
 def test_distribution_guard_no_pre08_publication() -> None:
     ledger = GUARD.load_ledger()
-    assert GUARD.check_release(ledger, "0.7.2")
-    assert GUARD.check_release(ledger, "0.8.0") == []
+    assert GUARD.check_release(ledger, "0.7.2", fresh={})
+    assert GUARD.check_release(ledger, "0.8.0", fresh={}) == []
 
 
 def test_distribution_guard_refuses_build_config_drift() -> None:

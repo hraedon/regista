@@ -5,9 +5,10 @@ establishes a fresh baseline, with no migration through trust-system schemas.
 The old ledger is preserved under plans/032-f0-inventory/ as historical evidence.
 It is not an allowlist for the new distribution. scripts/schema-baseline.json
 pins the new schema and workflow resources, starting with baseline version 1.
-Changing their bytes requires a deliberate, reviewed baseline/version decision.
-verify-baseline validates this local pin; it makes no claim of publication on
-PyPI (F4/F5 still own release version and publication).
+Schema hashes are append-only pairs keyed by KERNEL_SCHEMA_VERSION. Full git
+ancestry protects committed pairs before publication; verify-ledger and
+check-release also bind every post-cutover published wheel to its pinned pair.
+F4/F5 still own release version and publication.
 
 check-dist retains the existing reviewed-tree byte binding, ZIP/tar/path/mode
 checks, RECORD verification and exact pip/uv rebuild comparison. Only the
@@ -19,6 +20,7 @@ history. The pinned Hatch backend closure remains trusted executable build code.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import email.parser
 import email.policy
@@ -33,8 +35,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import unicodedata
+import urllib.request
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -43,7 +47,9 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = REPO_ROOT / "scripts" / "schema-baseline.json"
 PROJECT = "regista-hraedon"
-LEDGER_FORMAT = 3
+LEDGER_FORMAT = 4
+PYPI_JSON = f"https://pypi.org/pypi/{PROJECT}/json"
+PREPUBLICATION_MESSAGE = "no published 0.8.x release yet; PyPI binding not applicable"
 
 WHEEL_MIGRATIONS = "regista/"
 SDIST_MIGRATIONS = "src/regista/"
@@ -759,12 +765,14 @@ def check_ledger(
     ledger: Mapping[str, Any],
     frozen: Mapping[str, frozenset[str]] | None = None,
 ) -> list[str]:
-    expected_keys = {"format", "project", "source", "baseline_version", "baseline"}
+    expected_keys = {"format", "project", "source", "baseline_version", "baseline",
+                     "schema_versions"}
     if (
         set(ledger) != expected_keys
         or ledger.get("format") != LEDGER_FORMAT
         or ledger.get("project") != PROJECT
-        or ledger.get("baseline_version") != 1
+        or type(ledger.get("baseline_version")) is not int
+        or ledger["baseline_version"] < 1
     ):
         return ["unrecognized baseline manifest format/project/version"]
     baseline = ledger.get("baseline")
@@ -777,7 +785,77 @@ def check_ledger(
         )
     ):
         return ["baseline must pin exactly schema.sql and workflow.schema.json"]
+    pairs = ledger.get("schema_versions")
+    if (not isinstance(pairs, dict) or not pairs
+        or any(not re.fullmatch(r"[1-9][0-9]*", v)
+               or not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h)
+               for v, h in pairs.items())):
+        return ["schema_versions must contain positive version / SHA256 pairs"]
+    if pairs.get(str(ledger["baseline_version"])) != baseline["schema.sql"]:
+        return ["selected baseline version/hash does not match a schema_versions entry"]
+    if max(map(int, pairs)) != ledger["baseline_version"]:
+        return ["a new schema pin requires the current kernel version to bump with it"]
     return []
+
+
+def kernel_version(code: bytes, where: str) -> int:
+    """Read a literal version without executing the package being inspected."""
+    versions = []
+    for node in ast.parse(code).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "KERNEL_SCHEMA_VERSION" for t in node.targets
+        ):
+            value = ast.literal_eval(node.value)
+            if type(value) is not int or value < 1:
+                raise GuardError(f"{where}: kernel version must be a positive literal integer")
+            versions.append(value)
+    if len(versions) != 1:
+        raise GuardError(f"{where}: exactly one kernel schema version is required")
+    return versions[0]
+
+
+def check_pin_history(ledger: Mapping[str, Any], repo_root: Path = REPO_ROOT) -> list[str]:
+    """Previously committed pairs are append-only, including the F1 v1 pin.
+
+    Full ancestry is mandatory for this check; a shallow checkout cannot supply
+    the pre-publication immutability evidence. Git replacements/alternate stores
+    are refused and historical blobs are rehashed, as in the artifact guard.
+    Once published, verify-ledger independently binds pairs to PyPI bytes.
+    """
+    _check_no_object_rewrites(repo_root)
+    if _git(repo_root, "rev-parse", "--is-shallow-repository").strip() != b"false":
+        raise GuardError("schema pin history requires a full-depth checkout")
+    revisions = _git(
+        repo_root, "log", "--format=%H", "--", "scripts/schema-baseline.json"
+    ).decode().splitlines()
+    if not revisions:
+        raise GuardError("schema pin history has no committed baseline")
+    problems = []
+    for revision in revisions:
+        oid = _git(
+            repo_root, "rev-parse", f"{revision}:scripts/schema-baseline.json"
+        ).decode().strip()
+        blob = _git(repo_root, "cat-file", "blob", oid)
+        if _object_id(_git(repo_root, "rev-parse", "--show-object-format").decode().strip(),
+                      "blob", blob) != oid:
+            raise GuardError("historical pin blob does not match its object ID")
+        old = json.loads(blob)
+        pairs = old.get("schema_versions")
+        if pairs is None and old.get("format") == 3:
+            pairs = {str(old["baseline_version"]): old["baseline"]["schema.sql"]}
+        for version, digest in (pairs or {}).items():
+            if ledger["schema_versions"].get(version) != digest:
+                problems.append(f"kernel schema version {version} is immutable; "
+                                "changed or removed a committed pair; bump the version "
+                                "and append a new pin entry")
+    return sorted(set(problems))
+
+
+def verify_baseline(ledger: Mapping[str, Any], repo_root: Path = REPO_ROOT) -> list[str]:
+    problems = check_tree(ledger, repo_root)
+    if not check_ledger(ledger):
+        problems += check_pin_history(ledger, repo_root)
+    return problems
 
 
 def expected_migrations(ledger: Mapping[str, Any]) -> dict[str, str]:
@@ -983,6 +1061,11 @@ def check_tree(
     frozen: Mapping[str, frozenset[str]] | None = None,
 ) -> list[str]:
     problems = check_ledger(ledger)
+    if problems:
+        return problems
+    version = kernel_version((repo_root / "src/regista/kernel.py").read_bytes(), "kernel.py")
+    if version != ledger["baseline_version"]:
+        problems.append("code KERNEL_SCHEMA_VERSION does not match the selected baseline pin")
     for retired in FORBIDDEN_SOURCE_DIRS:
         if (repo_root / retired).exists():
             problems.append(f"{retired} must not exist: the old chain is retired")
@@ -997,12 +1080,80 @@ def check_tree(
     return problems + _compare(actual, expected_migrations(ledger), "src/regista/")
 
 
+def _fetch(url: str, attempts: int = 4) -> bytes:
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                body: bytes = resp.read()
+                return body
+        except OSError as exc:
+            last = exc
+            time.sleep(2**i)
+    raise GuardError(f"could not fetch {url} after {attempts} attempts: {last}")
+
+
+def build_releases() -> dict[str, Any]:
+    """Download every post-cutover wheel and inspect its actual schema/version.
+
+    Yanked wheels remain relevant to existing stores and are checked too. Empty
+    release entries and pre-0.8 artifacts belong to the retired chain.
+    """
+    index = json.loads(_fetch(PYPI_JSON))
+    releases: dict[str, Any] = {}
+    for version, files in index["releases"].items():
+        if not files:
+            continue
+        # Ignore pre-cutover prereleases too. Post-cutover version syntax must
+        # match our plain-release contract rather than disappear from the scan.
+        match = re.match(r"^(\d+)\.(\d+)", version)
+        if match and tuple(map(int, match.groups())) < (0, 8):
+            continue
+        _version_key(version)
+        wheels = [f for f in files if f["packagetype"] == "bdist_wheel"]
+        if not wheels:
+            raise GuardError(f"{version}: published release has no wheel to bind")
+        for file in wheels:
+            blob = _fetch(file["url"])
+            if _sha(blob) != file["digests"]["sha256"]:
+                raise GuardError(f"{file['filename']}: download does not match PyPI's digest")
+            resources = read_wheel(blob, file["filename"])
+            with zipfile.ZipFile(io.BytesIO(blob)) as wheel:
+                version_number = kernel_version(wheel.read("regista/kernel.py"), file["filename"])
+            entry = {"kernel_schema_version": version_number,
+                     "schema_sha256": resources.get("schema.sql")}
+            if version in releases and releases[version] != entry:
+                raise GuardError(f"{version}: published wheels disagree on schema/version")
+            releases[version] = entry
+    return releases
+
+
+def verify_ledger(ledger: Mapping[str, Any], fresh: Mapping[str, Any]) -> list[str]:
+    problems = check_ledger(ledger)
+    if problems:
+        return problems
+    for release, pair in fresh.items():
+        pinned = ledger["schema_versions"].get(str(pair["kernel_schema_version"]))
+        if pinned is None or pinned != pair["schema_sha256"]:
+            problems.append(f"PyPI release {release}: published schema/version differs from pin")
+    return problems
+
+
 def check_release(
-    ledger: Mapping[str, Any], version: str, repo_root: Path = REPO_ROOT
+    ledger: Mapping[str, Any], version: str, repo_root: Path = REPO_ROOT,
+    *, fresh: Mapping[str, Any] | None = None,
 ) -> list[str]:
-    problems = check_tree(ledger, repo_root)
+    problems = verify_baseline(ledger, repo_root)
     if _version_key(version) < (0, 8, 0):
         problems.append("the reduced baseline must not publish as a pre-0.8 release")
+    published = build_releases() if fresh is None else fresh
+    if not published:
+        print(PREPUBLICATION_MESSAGE)
+    problems += verify_ledger(ledger, published)
+    if published:
+        latest = max(published, key=_version_key)
+        if _version_key(version) <= _version_key(latest):
+            problems.append(f"{version} is already published or does not sort after {latest}")
     return problems
 
 
@@ -1011,6 +1162,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check-tree")
     sub.add_parser("verify-baseline")
+    sub.add_parser("verify-ledger")
     rel = sub.add_parser("check-release")
     rel.add_argument("--version", required=True)
     dist = sub.add_parser("check-dist")
@@ -1034,7 +1186,12 @@ def _main(args: argparse.Namespace, label: str) -> int:
     try:
         ledger = load_ledger()
         if args.cmd == "verify-baseline":
-            problems = check_tree(ledger)
+            problems = verify_baseline(ledger)
+        elif args.cmd == "verify-ledger":
+            fresh = build_releases()
+            if not fresh:
+                print(PREPUBLICATION_MESSAGE)
+            problems = verify_baseline(ledger) + verify_ledger(ledger, fresh)
         elif args.cmd == "check-release":
             problems = check_release(ledger, args.version)
         elif args.cmd == "check-dist":
