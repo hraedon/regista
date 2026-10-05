@@ -1,5 +1,11 @@
 # F1 Stage A — protection ledger
 
+**Stage B promotion, 2026-10-05:** the maintainer supplied deletion authorization
+after the closed ledger and two cross-lineage reviews. The following Stage A
+record is historical. The protected kernel now ships under `src/regista/`, its
+suite is the sole `tests/` tree, and runnable scenarios are under `examples/`.
+The separate [Stage B report](F1-stage-b-report.md) describes the cutover.
+
 Stage A4 closes all **212 remaining UNRESOLVED rows**. Stage A5 fixes the
 second cross-lineage review's two high, three medium and five low findings,
 adds 113 regression nodes, and corrects the create-deduplication disposition.
@@ -1550,7 +1556,7 @@ barrier/setup failure is counted as a kernel defect or mutation kill.
 
 ## Mutation proof
 
-Run `REGISTA_TEST_DSN=... .venv/bin/python prototypes/kernel/prove_f1.py`.
+Run `REGISTA_TEST_DSN=... .venv/bin/python scripts/prove_f1.py`.
 The runner copies only kernel assets to a temporary directory and redirects
 the suite's public import/CLI paths there. A clean control run is mandatory.
 Each selected node must report a test-body failure in JUnit; errors, skips,
@@ -1570,7 +1576,7 @@ recipes were completed before the final ledger edit; every final acceptance
 gate below is rerun after that edit. Counts are failing test nodes, not a claim
 that every assert statement in a selected test was reached.
 [F1-mutation-evidence.json](F1-mutation-evidence.json) records each mutant,
-source file, selector and every failing node. [prove_f1.py](prove_f1.py) holds
+source file, selector and every failing node. [prove_f1.py](../../scripts/prove_f1.py) holds
 the exact executable recipe for each name below: removed/inverted admission
 conditions, bypassed ownership/expiry/attempt checks, retry/sequence defects,
 partial commits, redirected namespace, invalid declaration acceptance,

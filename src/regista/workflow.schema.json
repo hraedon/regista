@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/hraedon/regista/prototypes/kernel/workflow.schema.json",
+  "$id": "https://github.com/hraedon/regista/blob/main/src/regista/workflow.schema.json",
   "title": "Regista kernel workflow document",
   "description": "The authoring format for a workflow definition, loadable from YAML or JSON. This is the 0.8 kernel's dialect: a deliberately reduced form of the 0.7 schema (src/regista/_workflow_schema.json). Keys the 0.7 schema accepted and this one does not are refused by name with an explanation rather than ignored -- see WORKFLOW_DOCUMENT_REMOVED_KEYS in kernel.py -- because silently dropping 'allowed_roles' would drop a role restriction, and silently dropping 'validator' would drop a gate.",
   "type": "object",

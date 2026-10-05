@@ -38,6 +38,7 @@ from typing import Any, Literal
 
 import psycopg
 import yaml
+from psycopg.conninfo import make_conninfo
 from psycopg.sql import SQL, Identifier
 from psycopg.types.json import Jsonb
 
@@ -243,9 +244,8 @@ def scalar(dsn: str, schema: str, sql: str, params: tuple[Any, ...] = ()) -> Any
 
 
 def named(dsn: str, app_name: str) -> str:
-    """The same DSN, tagged so pg_stat_activity can pick this session out."""
-    sep = "&" if "?" in dsn else "?"
-    return f"{dsn}{sep}application_name={app_name}"
+    """Attach a test label to either URI or keyword-form psycopg connection info."""
+    return make_conninfo(dsn, application_name=app_name)
 
 
 def create_settable_role(dsn: str) -> str:

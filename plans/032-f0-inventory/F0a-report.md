@@ -1,5 +1,9 @@
 # Plan 032 F0a — product-fit report
 
+**Historical measurements; promoted in Stage B on 2026-10-05.** Install the
+candidate wheel before running the moved commands below. The package owns its
+schema resources; [current example commands](../../examples/README.md).
+
 **Scope.** Both F0a scenarios, run against real PostgreSQL through the proposed
 public API, with the measurements Plan 032 F0a asks for. Date 2026-09-17,
 prototype at `prototypes/kernel/`.

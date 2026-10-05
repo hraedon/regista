@@ -5,6 +5,6 @@
   "baseline_version": 1,
   "baseline": {
     "schema.sql": "4bc366e7bda15cbe75baf42d522e22d152f1cce9966114e6bd9468e2caf8010d",
-    "workflow.schema.json": "62dfc1d63b122050c8d1da9fb1edb8705f4f3c0223f2e1dce146a0e330dbc51f"
+    "workflow.schema.json": "ca6f69b548f9873a866f320667c80d2abc10870429caefc340fa629f2c124bcb"
   }
 }
