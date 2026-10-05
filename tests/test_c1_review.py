@@ -261,6 +261,19 @@ def test_cli_uuid_arguments_are_typed() -> None:
     assert args.id == value
 
 
+def test_cli_recursion_limit_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Python 3.11's JSON decoder raises for deeply nested input; 3.14's
+    # decoder parses it and the kernel depth limit refuses it instead.
+    import regista.cli as commands
+
+    def parser_limit(value: str) -> Any:
+        raise RecursionError("JSON parser nesting limit")
+
+    monkeypatch.setattr(commands.json, "loads", parser_limit)
+    with pytest.raises(InvalidFieldError, match="parser limits"):
+        commands._fields(["value=[]"])
+
+
 @pytest.mark.parametrize("damage", ["disabled_fk", "inherited_child"])
 def test_baseline_enforcement_and_inheritance(
     registered: Kernel, dsn: str, schema: str, damage: str,
@@ -283,7 +296,8 @@ def test_admission_never_calls_destination_catalog_helper(
 ) -> None:
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(SQL(
-            "CREATE FUNCTION {}.jsonb_build_object(text,jsonb,text,jsonb) RETURNS jsonb "
+            "CREATE FUNCTION {}.jsonb_build_object(text,bigint,text,jsonb,text,jsonb) "
+            "RETURNS jsonb "
             "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'untrusted helper called'; END $$"
         ).format(Identifier(schema)))
     with pytest.raises(UnsupportedSchemaError, match="baseline"):

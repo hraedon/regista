@@ -306,12 +306,15 @@ MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
     ),
     (
         "event_sequence_constraint_removed",
-        "schema.sql",
-        replace_once(
-            "occurred_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),\n"
-            "    UNIQUE (work_item_id, event_seq)",
-            "occurred_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()",
-        ),
+        "kernel.py",
+        # Preserve packaged SQL and clean admission. Remove the constraint
+        # after the admitted first event, so the direct duplicate-insert test
+        # exercises its defect in the test body rather than failing setup.
+        method_replace("_append_event", "        return event_id", (
+            '        cur.execute("ALTER TABLE events DROP CONSTRAINT IF EXISTS "\n'
+            '                    "events_work_item_id_event_seq_key")\n'
+            "        return event_id"
+        )),
         "test_event_sequence_constraint",
     ),
     (
@@ -632,8 +635,8 @@ MUTANTS.extend(
             "absent_link_removal_refuses",
             "kernel.py",
             method_replace("remove_link", '        self._conn.commit()',
-                           '        if cur.rowcount == 0:\n'
-                           '            raise InvalidFieldError("no such typed link")\n'
+                           '            if cur.rowcount == 0:\n'
+                           '                raise InvalidFieldError("no such typed link")\n'
                            '        self._conn.commit()'),
             "test_remove_absent_link",
         ),
@@ -694,7 +697,7 @@ MUTANTS.extend(
                 "    sys.exit(main())",
                 "    try:\n        main()\n    except SystemExit:\n        pass\n    sys.exit(0)",
             ),
-            "test_cli_unlink or test_cli_unreachable_database",
+            "test_cli_unreachable_database",
         ),
     ]
 )
@@ -1172,12 +1175,14 @@ MUTANTS.extend([
      "test_release_drains_transition"),
     ("c1_unlink_retry", "kernel.py", method_replace("remove_link",
         '        self._conn.commit()',
-        '        if cur.rowcount == 0:\n'
-        '            raise InvalidFieldError("no such typed link")\n'
+        '            if cur.rowcount == 0:\n'
+        '                raise InvalidFieldError("no such typed link")\n'
         '        self._conn.commit()'), "test_unlink_retry_and_concurrent_noop"),
-    ("c1_retry_materializes", "kernel.py", method_replace("_idempotency_result",
+    ("c1_retry_materializes", "kernel.py", lambda source: method_replace(
+        "_idempotency_result", "for row in rows:", "for row in rows.fetchall():"
+    )(method_replace("_idempotency_result",
         'with self._conn.cursor(name="kernel_idempotency") as rows:\n'
-        '            rows.itersize = 64', 'with self._conn.cursor() as rows:'),
+        '            rows.itersize = 64', 'with self._conn.cursor() as rows:')(source)),
      "test_retry_memory_is_bounded"),
     ("c1_transition_digest", "kernel.py",
      body("_event_digest", "return _hash(_canonical(payload))"),
@@ -1188,14 +1193,14 @@ MUTANTS.extend([
     ("c1_transition_destination", "kernel.py",
      replace_once('if payload["to"] != to:', 'if False:'), "test_replay_pinned_destination"),
     ("c1_human_controls", "cli.py", body("_escape_human", "return str(value)"),
-     "test_cli_human_controls_escaped"),
+     "test_cli_human_controls_escaped and not health"),
     ("c1_field_envelope", "cli.py", replace_once(
         'raise InvalidFieldError(f"--field expects key=value, got {p!r}")',
         'raise SystemExit(f"--field expects key=value, got {p!r}")'),
      "test_cli_malformed_refusal and field"),
     ("c1_json_envelope", "cli.py", replace_once(
         'except (ValueError, RecursionError) as exc:', 'except ZeroDivisionError as exc:'),
-     "test_cli_malformed_refusal and (integer or depth)"),
+     "(test_cli_malformed_refusal and integer) or test_cli_recursion_limit_refusal"),
     ("c1_uuid_type", "cli.py", replace_once('s.add_argument("id", type=_uuid)',
                                            's.add_argument("id")'),
      "test_cli_uuid_arguments_are_typed"),
@@ -1210,6 +1215,9 @@ MUTANTS.extend([
         "probe = _RefusalParser(add_help=False)",
         "probe = argparse.ArgumentParser(add_help=False)"),
      "test_preliminary_cli_parser_refusal"),
+    ("c1_catalog_helper", "kernel.py", method_replace("_catalog_record",
+        "SELECT pg_catalog.jsonb_build_object(", "SELECT jsonb_build_object("),
+     "test_admission_never_calls_destination_catalog_helper"),
 ])
 
 def run(
