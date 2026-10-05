@@ -48,10 +48,33 @@ def body(name: str, replacement: str) -> Callable[[str], str]:
     return change
 
 
+def method_replace(name: str, before: str, after: str) -> Callable[[str], str]:
+    def change(source: str) -> str:
+        tree = ast.parse(source)
+        node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+        lines = source.splitlines(keepends=True)
+        end = node.end_lineno
+        assert end is not None
+        segment = "".join(lines[node.lineno - 1:end])
+        changed = replace_once(before, after)(segment)
+        return "".join(lines[:node.lineno - 1]) + changed + "".join(lines[end:])
+
+    return change
+
+
 def fencing(source: str) -> str:
     start = source.index("            # Lease fencing, before")
-    end = source.index('            state = item["current_state"]', start)
+    end = source.index("            if expected_seq is not None", start)
     return source[:start] + source[end:]
+
+
+def sequence_before_fencing(source: str) -> str:
+    start = source.index('            if expected_seq is not None and expected_seq !=')
+    end = source.index('            wf = self._read_workflow', start)
+    check = source[start:end]
+    changed = source[:start] + source[end:]
+    barrier = changed.index('            # Lease fencing, before')
+    return changed[:barrier] + check + changed[barrier:]
 
 
 def nonatomic(source: str) -> str:
@@ -648,6 +671,81 @@ MUTANTS.extend(
 )
 
 
+MUTANTS.extend(
+    [
+        (
+            "expected_sequence_gt", "kernel.py",
+            replace_once(
+                'expected_seq != int(item["last_event_seq"])',
+                'expected_seq > int(item["last_event_seq"])',
+            ),
+            "test_expected_sequence_stale_lower",
+        ),
+        (
+            "lease_subtype_erased", "kernel.py",
+            lambda source: source.replace("return LeaseNotHeldError(", "return StaleAttemptError("),
+            "test_transition_fencing[actor] or test_transition_fencing[released] "
+            "or test_transition_fencing[swept] or test_heartbeat_refusals[actor]",
+        ),
+        (
+            "replay_chain_check_removed", "kernel.py",
+            replace_once("if stored != running:", "if False:"),
+            "test_replay_detects_damage[chain] or test_cli_chain_break_nonzero",
+        ),
+        (
+            "inlock_retry_recheck_removed", "kernel.py",
+            replace_once(
+                'self._transaction_lock(cur, "idempotency", idempotency_key)\n'
+                '                prior = self._idempotency_result('
+                'cur, idempotency_key, request_hash)',
+                'self._transaction_lock(cur, "idempotency", idempotency_key)\n'
+                '                prior = None',
+            ),
+            "test_idempotency_recheck_under_item_lock",
+        ),
+        (
+            "single_sequence_number_skipped", "kernel.py",
+            replace_once(
+                'seq = int(item["next_event_seq"])',
+                'seq = int(item["next_event_seq"]) + (int(item["next_event_seq"]) == 2)',
+            ),
+            "test_concurrent_gap_free",
+        ),
+        (
+            "heartbeat_item_lock_removed", "kernel.py",
+            method_replace("heartbeat", '"FOR UPDATE",', '"",'),
+            "test_heartbeat_serializes_before_expiry_check",
+        ),
+        (
+            "public_writer_unclassified", "kernel.py",
+            lambda source: source + '\n    def unclassified_write(self):\n'
+            '        self._conn.execute("DELETE FROM claims")\n',
+            "test_public_methods_declare_access_and_gate_writes",
+        ),
+        (
+            "public_writer_declared_read", "kernel.py",
+            replace_once(
+                '@_pooled_operation(access="write")\n    def transition(',
+                '@_pooled_operation(access="read")\n    def transition(',
+            ),
+            "test_public_methods_declare_access_and_gate_writes",
+        ),
+        (
+            "invalid_utf8_traceback_restored", "kernel.py",
+            replace_once(
+                "json.JSONDecodeError, UnicodeDecodeError, OSError",
+                "json.JSONDecodeError, OSError",
+            ),
+            "test_cli_invalid_utf8_workflow",
+        ),
+        (
+            "sequence_before_lease_fencing", "kernel.py", sequence_before_fencing,
+            "test_fencing_precedes_sequence",
+        ),
+    ]
+)
+
+
 def run(root: Path, selection: str, report: Path) -> tuple[int, list[str], list[str], str]:
     env = {**os.environ, "REGISTA_KERNEL_TEST_ROOT": str(root)}
     result = subprocess.run(
@@ -655,7 +753,7 @@ def run(root: Path, selection: str, report: Path) -> tuple[int, list[str], list[
         env=env,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=300,
     )
     tree = ET.parse(report)
     failed, other = [], []

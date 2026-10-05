@@ -58,15 +58,19 @@ still mean present and non-null after merge and clear.
 `conftest.py` creates unique disposable schemas, then uses only public
 Kernel.connect/initialize for kernel bootstrap. Raw SQL is confined to schema
 lifecycle, deliberate corruption, database failure/barrier fixtures and relative
-lease expiry. Unset REGISTA_TEST_DSN skips with a clear explanation. No fixed
-calendar dates determine expiry. All normal writes use the public API.
+lease expiry. Unset REGISTA_TEST_DSN skips only for local optional runs; CI or
+REGISTA_REQUIRE_DB=1 refuses at session start with exit 4. No fixed calendar
+dates determine expiry. All normal writes use the public API.
 
 Stewardship: isolated branch feat/wi364-f1-protection, work item WI-364 as
-assigned by the user; working set prototypes/kernel only. The live tracker was
+assigned by the user; Stage A3 working set prototypes/kernel and
+.github/workflows/ci.yml (CI integration explicitly authorized by the user). The live tracker was
 not claimed/updated because the user explicitly excluded the live estate.
 External evidence is the gates and scratch-mutation artifacts below; no suite
-provenance reference is invented. Independent review by another model family
-remains pending, as requested. This is a review handoff, not an acceptance claim.
+provenance reference is invented. The user supplied an independent Claude Opus
+review of 12a831b/ceecc38/626927e: no critical defect, nine evidence/process
+findings. Stage A3 addresses those findings; independent review of this revision
+remains pending. This is a review handoff, not an acceptance claim.
 
 Inventory corrections: the actual typed-reference module contains **20** tests
 (the map says 18), TestCheckIdempotency has more than the map's six assertions,
@@ -136,7 +140,7 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_remaining_errors.py::TestCustomFieldViolation::test_invalid_enum_on_create` | PORTED | `prototypes/kernel/tests/test_f1_fields.py::test_declared_field_refusals[enum-create]` |  | 1/1 nodes; recipes below |
 | `tests/test_remaining_errors.py::TestCustomFieldViolation::test_custom_field_violation_on_transition` | PORTED | `prototypes/kernel/tests/test_f1_fields.py::test_declared_field_refusals[type-transition]` |  | 1/1 nodes; recipes below |
 | `tests/test_remaining_errors.py::TestDbNotFound::test_connect_without_create_rejects` | PORTED | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[missing]` | Explicit connect/initialize creates the baseline; require_existing refuses missing/empty destinations without writes. See Stage A2 opening choice below. | 2 new refusal nodes mutation-proven; initializer proof retained |
-| `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_heartbeat_rejects_different_actor` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[actor]` |  | 1/1 nodes; recipes below |
+| `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_heartbeat_rejects_different_actor` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[actor]` | Exact LeaseNotHeldError is required, rather than merely its StaleAttemptError base. Every heartbeat/fencing case asserts the exact applicable subtype; this kernel exposes no error-code attribute. The original row overstated ownership-subtype evidence. | 1/1 nodes; lease_subtype_erased killed |
 | `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_heartbeat_rejects_after_auto_steal` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[takeover]` |  | 1/1 nodes; recipes below |
 | `tests/test_stale_heartbeat.py::TestAC07StaleHeartbeat::test_valid_heartbeat_succeeds` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_extension` |  | 1/1 nodes; recipes below |
 | `tests/test_coverage_gaps.py::TestExpectedAttemptNumber::test_heartbeat_rejects_stale_attempt_number` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[attempt]` |  | 1/1 nodes; recipes below |
@@ -167,8 +171,8 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_global_chain_orphan_counts_as_chain_breaks` | RETIRED-BY-DESIGN | `preservation map RETIRED-BY-DESIGN index: global signature-bound chain; D5` | No global signed head survives. Per-item chain and tail/sequence reconciliation are covered separately. | Retirement reference |
 | `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_global_chain_head_mismatch_counts_as_chain_breaks` | RETIRED-BY-DESIGN | `preservation map RETIRED-BY-DESIGN index: global signature-bound chain; D5` | No global signed head survives. Per-item chain and tail/sequence reconciliation are covered separately. | Retirement reference |
 | `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_clean_replay_reports_zero_chain_breaks` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[chain]` |  | 1/1 nodes; recipes below |
-| `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_cli_replay_exits_nonzero_and_prints_chain_breaks` | PORTED | `prototypes/kernel/tests/test_f1_cli.py::test_cli_drift_nonzero` | CLI exits 1 on reported damage in human and JSON modes. | 1/1 nodes; recipes below |
-| `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_cli_replay_json_serializes_chain_breaks` | PORTED | `prototypes/kernel/tests/test_f1_cli.py::test_cli_drift_nonzero` | CLI exits 1 on reported damage in human and JSON modes. | 1/1 nodes; recipes below |
+| `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_cli_replay_exits_nonzero_and_prints_chain_breaks` | PORTED | `prototypes/kernel/tests/test_f1_cli.py::test_cli_chain_break_nonzero[False]` | CLI exits 1 and prints the single per-item chain-link diagnostic after corrupting event 1. Numeric chain_breaks=1 output is not retained; projection-only drift did not prove this obligation. | 1/1 nodes; replay_chain_check_removed killed |
+| `tests/test_wi266_fail_closed.py::TestChainBreaksFailClosed::test_cli_replay_json_serializes_chain_breaks` | PORTED | `prototypes/kernel/tests/test_f1_cli.py::test_cli_chain_break_nonzero[True]` | CLI exits 1 and JSON drift contains exactly the one chain-link diagnostic. The old numeric report shape changes; chain damage reporting is directly exercised. | 1/1 nodes; replay_chain_check_removed killed |
 | `tests/test_wi266_fail_closed.py::TestOrphanProjectionRowHaltsEverywhere::test_whole_store_orphan_with_created_event_halts` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[orphan_created]` | Missing projection is drift, never a clean result; kernel reports drift rather than old whole-store halt counters. | 1/1 nodes; recipes below |
 | `tests/test_wi266_fail_closed.py::TestOrphanProjectionRowHaltsEverywhere::test_scoped_orphan_with_created_event_halts` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[orphan_created]` | Missing projection is drift, never a clean result; kernel reports drift rather than old whole-store halt counters. | 1/1 nodes; recipes below |
 | `tests/test_wi266_fail_closed.py::TestOrphanProjectionRowHaltsEverywhere::test_in_memory_orphan_with_created_event_halts` | PORTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[orphan_created]` | Missing projection is drift, never a clean result; kernel reports drift rather than old whole-store halt counters. | 1/1 nodes; recipes below |
@@ -214,7 +218,7 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_contract.py::TestCheckIdempotency::test_work_item_id_none_skips_check` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Retire private wildcard None lookup semantics; public retries require item, actor and transition. | Retirement reference |
 | `tests/test_contract.py::TestCheckExpectedSeq::test_none_expected_passes` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_original_result` | Both first transitions omit expected_seq (default None) and remain valid as the current sequence advances. | 1/1 nodes; recipes below |
 | `tests/test_contract.py::TestCheckExpectedSeq::test_matching_passes` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence[0]` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
-| `tests/test_contract.py::TestCheckExpectedSeq::test_mismatching_raises` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence[1]` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
+| `tests/test_contract.py::TestCheckExpectedSeq::test_mismatching_raises` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence_stale_lower` | Current seq 5 with expected seq 3 is refused without effects, preserving the old stale-lower assertion. Higher expectations remain separately covered by test_expected_sequence[1] and [99]; the original mapping overstated the port. | 1/1 nodes; expected_sequence_gt killed |
 | `tests/test_link_errors.py::TestLinkErrorPaths::test_disallowed_link_type_rejected` | PORTED | `prototypes/kernel/tests/test_f1_queries_links.py::test_link_vocabulary_and_removal` |  | 1/1 nodes; recipes below |
 | `tests/test_link_errors.py::TestLinkErrorPaths::test_link_target_not_found_rejected` | PORTED | `prototypes/kernel/tests/test_f1_queries_links.py::test_link_refusals[missing_target]` |  | 1/1 nodes; recipes below |
 | `tests/test_link_errors.py::TestLinkErrorPaths::test_remove_nonexistent_link_rejected` | PORTED | `prototypes/kernel/tests/test_f1_queries_links.py::test_remove_absent_link` |  | 1/1 nodes; recipes below |
@@ -327,7 +331,7 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `§5 event/projection rollback between effects` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_core.py::test_event_projection_atomicity` |  | 2/2 nodes; recipes below |
 | `§5 reducer-reserved caller payload refusal` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_core.py::test_reserved_payload_refusal` |  | 5/5 nodes; recipes below |
 | `§5 deletion of field-changing final event` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[tail_deleted]` |  | 1/1 nodes; recipes below |
-| `§6 actor-kind/role changes conflict on retry` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict` |  | 8/8 nodes; recipes below |
+| `§6 actor-kind/role/expected-seq changes conflict on retry` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict` |  | 9/9 nodes; recipes below |
 | `§7 D7 shallow merge and explicit atomic clearing` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_fields.py::test_shallow_merge_and_atomic_clear` |  | 1/1 nodes; recipes below |
 | `§8 D6 bounded single-hop query: direction, satisfaction, no scheduler` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_queries_links.py::test_d6_single_hop_no_scheduler` |  | 1/1 nodes; recipes below |
 | `§9 every actual CLI command, subprocess, both modes` | NEWLY PROTECTED | `prototypes/kernel/tests/test_f1_cli.py::test_each_command` |  | 36/36 nodes; recipes below |
@@ -1505,6 +1509,37 @@ inspection nodes fail on the wrong error envelope. The scratch runner's
 unmodified control passed before either mutation. These are assertion failures,
 not setup errors. Supported existing schemas retain their data/history/counts.
 
+## Stage A3 — cross-lineage review findings
+
+All nine supplied findings are addressed. This adds **10 test functions / 22
+collected nodes**, retaining every Stage A2 node. Assertions about the old
+source map remain separate from these nine review findings; map-row disposition
+counts therefore do not change.
+
+The tests-first run against the pre-fix implementation reported **13 failed,
+19 passed, 320 deselected**: fencing precedence (5), invalid UTF-8 (4), required
+DSN enforcement (2), CI wiring (1), and access declarations (1). The UTF-8 test
+was subsequently corrected to the existing workflow-validation contract of
+exit 1 with problems on stdout; rerunning those four corrected cases against
+HEAD's pre-A3 kernel still reported **4 failed, 348 deselected**, with tracebacks.
+Two preliminary concurrency failures were test-barrier defects: PostgreSQL's
+statistics snapshot was cached inside the lock-holding transaction. Clearing
+only that statistics snapshot on each poll fixed the barrier, and the original
+kernel then passed both concurrency controls before any runtime change. No
+barrier/setup failure is counted as a kernel defect or mutation kill.
+
+| Finding | Repair / evidence |
+| --- | --- |
+| Stale-lower expected_seq | Current 5 / expected 3 refuses without item/history changes. Previous 3 sequence nodes passed expected_sequence_gt; the added stale-lower node fails it. Corrected the original row 217. |
+| Lease-refusal subtype | All 4 heartbeat and 7 transition-fencing cases assert exact types. Actor/released/swept require LeaseNotHeldError; expired requires LeaseExpiredError; missing/wrong/taken-over attempts require StaleAttemptError. Previous actor/released/heartbeat-actor assertions passed subtype erasure; strengthened assertions fail it. No kernel error-code surface exists. Corrected row 139. |
+| CI integration / missing DSN | The postgres:15 CPython 3.11–3.14 prototype job explicitly runs prototypes/kernel/tests with REGISTA_TEST_DSN and REGISTA_REQUIRE_DB=1. Session-start refusal exits 4 for CI or required-DB mode without a DSN. Subprocess tests pin local skip, CI failure, required failure and configured success; a YAML pin checks job wiring. Remote CI was not invoked. |
+| Request-hash baseline | **no store written by a released build exists; the 0.8.0 baseline defines the hash**. KERNEL_SCHEMA_VERSION stays 1. transition's adjacent docstring defines canonical SHA-256 inputs, null defaults and the exclusion of attempt/key. actor_kind, role and expected_seq conflicts are tested. There is no claim that retries from an unreleased older prototype store are compatible. |
+| Fencing before sequence | Sequence and pinned-workflow validation now follow lease fencing. Five paired cases refuse with the exact fencing type even with expected_seq=99. Matching idempotent retries still return their original result before both checks, including after lease release and sequence advancement. |
+| Invalid UTF-8 parsing | UnicodeDecodeError maps to InvalidWorkflowError. JSON and YAML, each in human and JSON CLI modes, cleanly report one invalid-document problem, exit 1 and emit no stderr traceback. |
+| Targeted mutations / heartbeat locking | Single-check mutations disable only chain comparison or the second, in-lock retry lookup; a sequence mutation skips only number 2. Real lock barriers require both retries to miss the fast lookup before either acquires the item lock. The heartbeat test holds that row while a live heartbeat blocks, expires the lease relative to clock_timestamp(), then releases the lock and requires LeaseExpiredError. Dropping heartbeat's FOR UPDATE now fails the test deterministically; the reported survivor is closed. |
+| Future write-gate coverage | Each public Kernel operation declares read/write/initialize/lifecycle access. Writers receive the common schema gate; initialize keeps its explicit fresh-destination guard. The pin introspects every public method and follows literal persistent SQL through self/cls helpers; no second method list exists. An unclassified public DELETE method and transition mislabeled read both fail the pin. This is source/access-declaration coverage, not a proof of arbitrary dynamically generated SQL. |
+| CLI chain reporting | Corrupting only event 1's predecessor yields one chain diagnostic and exit 1 in both modes. JSON asserts the exact one-element drift list; human output asserts the same message. Corrected rows 170–171: no claim to retain the old printed numeric counter. |
+
 ## Mutation proof
 
 Run `REGISTA_TEST_DSN=... .venv/bin/python prototypes/kernel/prove_f1.py`.
@@ -1517,11 +1552,11 @@ setup/teardown errors never count. The clean control run excludes only the
 large memory-bound case, which runs separately in the full suite and against
 the materialization mutant.
 
-Final proof: **71 mutants killed; 276 distinct test nodes proved**.
-This comprises the complete 70-mutant run and a targeted, clean-control
-restoration of CLI connection setup outside its error handler (both modes).
-The runtime/tests under proof are committed at `ceecc38`; only proof and
-ledger artifacts were edited afterwards.
+Final Stage A3 proof: **90 mutants killed; 327 distinct test nodes proved**,
+from one complete clean-control run (Stage A2: 80 / 311). Scratch artifacts and
+recipes were completed before the final ledger edit; every final acceptance
+gate below is rerun after that edit. Counts are failing test nodes, not a claim
+that every assert statement in a selected test was reached.
 [F1-mutation-evidence.json](F1-mutation-evidence.json) records each mutant,
 source file, selector and every failing node. [prove_f1.py](prove_f1.py) holds
 the exact executable recipe for each name below: removed/inverted admission
@@ -1538,8 +1573,48 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 
 | Mutation-proven new node | Defect recipes that made it fail |
 | --- | --- |
+| `prototypes/kernel/tests/test_f1_admission.py::test_public_methods_declare_access_and_gate_writes` | `public_writer_declared_read`, `public_writer_unclassified` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_event_sequence_constraint` | `event_sequence_constraint_removed` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_generic_review_note_and_mixed_actors` | `required_gate_removed` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_history_cursor_windows` | `history_missing`, `history_order_reversed` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[allowed_roles]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[attempt_threshold]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[extends]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[hook_defaults]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[hooks]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[link_types]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[privileged]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[regista_version]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[validator]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[validator_params]` | `legacy_document_keys_accepted` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_replay_key_order_is_irrelevant` | `json_key_order_not_canonical` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_scoped_replay_ignores_other_damage` | `replay_always_clean` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_stamps_use_one_database_instant` | `database_clock_replaced` |
+| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_sweep_preserves_replacement_lease` | `sweep_live_leases` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_chain_break_nonzero[False]` | `replay_chain_check_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_chain_break_nonzero[True]` | `replay_chain_check_removed` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_cli_drift_nonzero` | `cli_failures_exit_zero`, `replay_always_clean` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_cli_fresh_init` | `cli_success_exits_one` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[health-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[health-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[history-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[history-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[lease-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[lease-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[list-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[list-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[replay-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[replay-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[show-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[show-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_list-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_list-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_show-empty]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_show-missing]` | `cli_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_invalid_utf8_workflow[False-json]` | `invalid_utf8_traceback_restored` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_invalid_utf8_workflow[False-yaml]` | `invalid_utf8_traceback_restored` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_invalid_utf8_workflow[True-json]` | `invalid_utf8_traceback_restored` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_cli_invalid_utf8_workflow[True-yaml]` | `invalid_utf8_traceback_restored` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_cli_listing_modes_and_pages` | `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_cli_missing_dsn[False-claim]` | `missing_dsn_exit_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_cli_missing_dsn[False-health]` | `missing_dsn_exit_one` |
@@ -1599,10 +1674,10 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-init]` | `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-lease]` | `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-link]` | `cli_success_exits_one` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-list]` | `cli_success_exits_one` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-list]` | `cli_list_workflow_hidden`, `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-release]` | `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-replay]` | `cli_success_exits_one` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-show]` | `cli_success_exits_one` |
+| `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-show]` | `cli_show_workflow_hidden`, `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-transition]` | `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-workflow_list]` | `cli_success_exits_one` |
 | `prototypes/kernel/tests/test_f1_cli.py::test_each_command[False-workflow_register]` | `cli_success_exits_one` |
@@ -1631,7 +1706,7 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_core.py::test_claim_contested[other]` | `claim_contention` |
 | `prototypes/kernel/tests/test_f1_core.py::test_claim_contested[w]` | `claim_contention` |
 | `prototypes/kernel/tests/test_f1_core.py::test_concurrent_claim_one_winner` | `claim_contention` |
-| `prototypes/kernel/tests/test_f1_core.py::test_concurrent_gap_free` | `sequence_gaps` |
+| `prototypes/kernel/tests/test_f1_core.py::test_concurrent_gap_free` | `sequence_gaps`, `single_sequence_number_skipped` |
 | `prototypes/kernel/tests/test_f1_core.py::test_concurrent_idempotency[False]` | `retry_lookup_removed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_concurrent_idempotency[True]` | `retry_lookup_removed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_concurrent_workflow_registration` | `workflow_lock_missing` |
@@ -1643,21 +1718,30 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence[0]` | `expected_sequence_always_refused` |
 | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence[1]` | `expected_sequence_ignored` |
 | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence[99]` | `expected_sequence_ignored` |
+| `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence_stale_lower` | `expected_sequence_gt` |
+| `prototypes/kernel/tests/test_f1_core.py::test_fencing_precedes_sequence[actor]` | `sequence_before_lease_fencing` |
+| `prototypes/kernel/tests/test_f1_core.py::test_fencing_precedes_sequence[expired]` | `sequence_before_lease_fencing` |
+| `prototypes/kernel/tests/test_f1_core.py::test_fencing_precedes_sequence[missing]` | `sequence_before_lease_fencing` |
+| `prototypes/kernel/tests/test_f1_core.py::test_fencing_precedes_sequence[released]` | `sequence_before_lease_fencing` |
+| `prototypes/kernel/tests/test_f1_core.py::test_fencing_precedes_sequence[takeover]` | `sequence_before_lease_fencing` |
 | `prototypes/kernel/tests/test_f1_core.py::test_full_repair_handoff` | `replay_ignores_handoff_fields` |
 | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_extension` | `heartbeat_no_extension` |
-| `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[actor]` | `heartbeat_owner_attempt_expiry` |
+| `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[actor]` | `heartbeat_owner_attempt_expiry`, `lease_subtype_erased` |
 | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[attempt]` | `heartbeat_owner_attempt_expiry` |
 | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[expired]` | `heartbeat_owner_attempt_expiry` |
 | `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_refusals[takeover]` | `heartbeat_owner_attempt_expiry` |
+| `prototypes/kernel/tests/test_f1_core.py::test_heartbeat_serializes_before_expiry_check` | `heartbeat_item_lock_removed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[actor]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[actor_kind]` | `retry_conflict_accepted` |
+| `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[expected_seq]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[fields]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[item]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[payload]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[role]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[transition]` | `retry_conflict_accepted` |
 | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[unset]` | `retry_conflict_accepted` |
-| `prototypes/kernel/tests/test_f1_core.py::test_idempotency_original_result` | `retry_returns_latest`, `retry_lookup_removed` |
+| `prototypes/kernel/tests/test_f1_core.py::test_idempotency_original_result` | `retry_lookup_removed`, `retry_returns_latest` |
+| `prototypes/kernel/tests/test_f1_core.py::test_idempotency_recheck_under_item_lock` | `inlock_retry_recheck_removed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_invalid_lease_ttl[-1.0-claim]` | `invalid_ttl_allowed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_invalid_lease_ttl[-1.0-heartbeat]` | `invalid_ttl_allowed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_invalid_lease_ttl[-inf-claim]` | `invalid_ttl_allowed` |
@@ -1676,11 +1760,11 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_core.py::test_reserved_payload_refusal[unset]` | `reserved_payload_allowed` |
 | `prototypes/kernel/tests/test_f1_core.py::test_sustained_pool_operations` | `prepared_cache_restored` |
 | `prototypes/kernel/tests/test_f1_core.py::test_sweep_scoped_and_live_safe` | `sweep_live_leases` |
-| `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[actor]` | `lease_fencing` |
+| `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[actor]` | `lease_fencing`, `lease_subtype_erased` |
 | `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[expired]` | `lease_fencing` |
 | `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[missing]` | `lease_fencing` |
-| `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[released]` | `lease_fencing` |
-| `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[swept]` | `lease_fencing` |
+| `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[released]` | `lease_fencing`, `lease_subtype_erased` |
+| `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[swept]` | `lease_fencing`, `lease_subtype_erased` |
 | `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[takeover]` | `lease_fencing` |
 | `prototypes/kernel/tests/test_f1_core.py::test_transition_fencing[wrong]` | `lease_fencing` |
 | `prototypes/kernel/tests/test_f1_core.py::test_transition_is_the_only_public_event_writer` | `append_writer_reintroduced` |
@@ -1744,11 +1828,11 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[initial]` | `document_rules_ignored` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[name]` | `document_rules_ignored` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[states]` | `document_rules_ignored` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[undeclared_role]` | `workflow_semantics_unchecked`, `document_rules_ignored` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unknown_from]` | `workflow_semantics_unchecked`, `document_rules_ignored` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unknown_to]` | `workflow_semantics_unchecked`, `document_rules_ignored` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unreachable]` | `workflow_semantics_unchecked`, `document_rules_ignored` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unused_role]` | `workflow_semantics_unchecked`, `document_rules_ignored` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[undeclared_role]` | `document_rules_ignored`, `workflow_semantics_unchecked` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unknown_from]` | `document_rules_ignored`, `workflow_semantics_unchecked` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unknown_to]` | `document_rules_ignored`, `workflow_semantics_unchecked` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unreachable]` | `document_rules_ignored`, `workflow_semantics_unchecked` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_document_semantic_refusals[unused_role]` | `document_rules_ignored`, `workflow_semantics_unchecked` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_initialize_refuses_without_writes[empty_meta]` | `schema_refusal_removed` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_initialize_refuses_without_writes[legacy]` | `schema_refusal_removed` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_initialize_refuses_without_writes[unknown]` | `schema_refusal_removed` |
@@ -1758,6 +1842,8 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_load_refusals[extension]` | `invalid_files_accepted` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_load_refusals[syntax]` | `invalid_files_accepted` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_namespace_isolation` | `namespace_shared` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[empty]` | `open_existing_gate_removed` |
+| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[missing]` | `open_existing_gate_removed` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_supplied_schema_cannot_redirect` | `search_path_injection` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_supplied_workflow_name_is_data` | `workflow_name_ignored` |
 | `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_unsupported_schema_cannot_write[claim-missing]` | `write_schema_gate_removed` |
@@ -1802,7 +1888,7 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_queries_links.py::test_remove_absent_link` | `absent_link_removal_silent` |
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_clean_and_boundary` | `replay_resets_fencing` |
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[all_deleted]` | `replay_always_clean` |
-| `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[chain]` | `replay_always_clean` |
+| `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[chain]` | `replay_always_clean`, `replay_chain_check_removed` |
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[fields]` | `replay_always_clean` |
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[middle_deleted]` | `replay_always_clean` |
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_detects_damage[orphan_created]` | `replay_always_clean` |
@@ -1815,61 +1901,39 @@ operation failures against PostgreSQL, not mocks or inverted test assertions.
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_read_only_no_temp_residue` | `replay_writes` |
 | `prototypes/kernel/tests/test_f1_replay.py::test_replay_repeatable_snapshot` | `snapshot_read_committed` |
 
-Stage A2 mutation evidence (in addition to the existing table):
+Stage A3's targeted recipes supplement the older broad mutants; the replay
+chain, in-lock retry and single-number sequence recipes preserve their enclosing
+bodies. The earlier sequence_gaps recipe was already an expression mutation,
+not a replaced body; single_sequence_number_skipped narrows it further to one
+number. The lease_fencing recipe now removes only fencing, retaining workflow
+and sequence logic so unrelated NameError failures cannot count as evidence.
 
-| Test node | Mutant |
-| --- | --- |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_event_sequence_constraint` | `event_sequence_constraint_removed` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_generic_review_note_and_mixed_actors` | `required_gate_removed` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_history_cursor_windows` | `history_missing` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_history_cursor_windows` | `history_order_reversed` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[allowed_roles]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[attempt_threshold]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[extends]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[hook_defaults]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[hooks]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[link_types]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[privileged]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[regista_version]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[validator]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_legacy_document_keys_fail_closed[validator_params]` | `legacy_document_keys_accepted` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_replay_key_order_is_irrelevant` | `json_key_order_not_canonical` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_scoped_replay_ignores_other_damage` | `replay_always_clean` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_stamps_use_one_database_instant` | `database_clock_replaced` |
-| `prototypes/kernel/tests/test_f1_caller_assertions.py::test_sweep_preserves_replacement_lease` | `sweep_live_leases` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[health-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[health-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[history-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[history-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[lease-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[lease-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[list-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[list-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[replay-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[replay-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[show-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[show-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_list-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_list-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_show-empty]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_cli.py::test_cli_inspection_requires_existing[workflow_show-missing]` | `cli_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[empty]` | `open_existing_gate_removed` |
-| `prototypes/kernel/tests/test_f1_namespace_workflows.py::test_open_existing_refuses_without_writes[missing]` | `open_existing_gate_removed` |
+| New recipe | Failing selected nodes |
+| --- | ---: |
+| `expected_sequence_gt` | 1 |
+| `lease_subtype_erased` | 4 |
+| `replay_chain_check_removed` | 3 |
+| `inlock_retry_recheck_removed` | 1 |
+| `single_sequence_number_skipped` | 1 |
+| `heartbeat_item_lock_removed` | 1 |
+| `public_writer_unclassified` | 1 |
+| `public_writer_declared_read` | 1 |
+| `invalid_utf8_traceback_restored` | 4 |
+| `sequence_before_lease_fencing` | 5 |
 
-Additional recipes `cli_show_workflow_hidden` and `cli_list_workflow_hidden`
-remove the pinned-workflow display and kill their respective human CLI nodes.
-`event_sequence_constraint_removed` edits only scratch `schema.sql`; every other
-recipe edits a scratch Python module. All 80 selected mutations reached test
-assertion failures, with no selected setup errors or skips.
-
-The remaining **19 nodes** are **not claimed mutation-proven**: the original
-12 successful typed-reference/schema/document/planner cases, supported existing
-open (1), positive enum/nested-field round trips (2), flat-schema catalog check
-(1), 100-item replay workloads (2), and 250-link lookup workload (1). Every node
-runs under both interpreter gates. All behaviour-critical new refusal and lease
-cases have scratch mutation evidence.
+All 90 recipes reached test-body failures; no selected setup errors, skips or
+survivors count. The remaining **25 nodes** are **not claimed mutation-proven**:
+Stage A2's 19 successful typed-reference/schema/document/planner/round-trip/load
+nodes; the four DSN-mode subprocess cases, CI job pin, and positive retry-before-
+fencing/sequence case added in A3. They all run under both interpreter gates.
+The CI and DSN-refusal cases additionally have tests-first evidence above.
 
 ## Outstanding obligations
+
+No supplied Stage A3 finding remains open; the heartbeat lock-removal survivor
+now has deterministic mutation proof. Independent cross-lineage re-review of
+A3 is pending. No push, publish, live-estate write, Stage B deletion, or acceptance
+transition was performed. The existing map obligations below remain unchanged.
 
 **The zero-UNRESOLVED goal is not achieved: 212 assertion rows remain
 UNRESOLVED. Stage B is not authorized by this ledger.** These are 2
@@ -2012,32 +2076,31 @@ independent review. No live tracker/provenance write or review verdict is claime
 
 ## Gate results
 
-Disposable PostgreSQL 15, CPython 3.14.8 and 3.11.15. These commands are run
-again after this final ledger/evidence edit; a failed command requires correction
-and a fresh complete gate pass. Final tool output is reported in the handoff.
-DSN is the user-supplied disposable REGISTA_TEST_DSN, also passed positionally
-where required. No live database or other repository is used.
+Disposable PostgreSQL 15 in a new task-owned container, CPython 3.14.8 and
+3.11.15. Every command below is run after the LAST ledger/evidence/code edit;
+a failure requires correction and a fresh complete gate pass. The final chat
+handoff reports exact output. These are local acceptance results, not remote
+GitHub CI results. No live database or other repository is modified.
 
-The initial acceptance run exposed a stale connect-parameter pin in
-`test_mutations.py`; it now includes the authorized `require_existing=False`
-keyword. Concurrent scenario invocations also collided on their fixed disposable
-`public` schema. The complete acceptance run below uses sequential scenario
-commands with their documented empty-database precondition restored by manually
-dropping only the eight kernel tables in disposable `public` before each standalone
-example and before the scenario wrapper. The isolated pytest suites can still run
-independently in parallel; their schemas are unaffected by that fixture cleanup.
+The isolated protection suites use REGISTA_TEST_DSN on this container. Each
+standalone mutation/example command and the scenario wrapper receives its own
+fresh disposable database on the same server. This preserves the examples'
+empty-database precondition without cleanup of an existing public schema or
+cross-command collisions. The wrapper runs its three scripts sequentially.
+DSNs are supplied through the documented variable/positional argument; only
+ordinary disposable test credentials are used.
 
 | Command | Final acceptance result |
 | --- | --- |
-| `.venv/bin/ruff check src/ tests/ tools/ prototypes/` | All checks passed |
-| `.venv/bin/mypy` | No issues in 127 source files |
-| `.venv/bin/pytest prototypes/kernel/tests -q` | 330 passed on CPython 3.14.8 |
-| `/tmp/regista-f1-python311/bin/python -m pytest prototypes/kernel/tests -q` | 330 passed on CPython 3.11.15 |
+| `.venv/bin/ruff check src/ tests/ tools/ prototypes/` | All checks passed! |
+| `.venv/bin/mypy` | Success: no issues found in 128 source files |
+| `.venv/bin/python -m pytest prototypes/kernel/tests -q` | 352 passed on CPython 3.14.8 |
+| `/tmp/regista-f1-python311/bin/python -m pytest prototypes/kernel/tests -q` | 352 passed on CPython 3.11.15 |
 | `.venv/bin/python prototypes/kernel/test_mutations.py "$DSN"` | 69 passed, 0 failed |
-| `.venv/bin/python prototypes/kernel/example_handoff.py "$DSN"` | Scenario passed |
+| `.venv/bin/python prototypes/kernel/example_handoff.py "$DSN"` | Scenario passed. |
 | `.venv/bin/python prototypes/kernel/example_documents.py "$DSN"` | Scenario passed |
-| `.venv/bin/pytest prototypes/kernel/test_scenarios.py -q` | 3 passed |
-| `env -u REGISTA_TEST_DSN .venv/bin/pytest prototypes/kernel/tests -q` | 330 skipped; explicit unset-DSN reason |
+| `.venv/bin/python -m pytest prototypes/kernel/test_scenarios.py -q` | 3 passed |
+| `env -u REGISTA_TEST_DSN CI=true .venv/bin/python -m pytest prototypes/kernel/tests -q` | Exit 4; REGISTA_TEST_DSN is required, zero silent skips |
 
 ## Counts (assertion rows; distinct collected nodes reported separately)
 
@@ -2053,7 +2116,8 @@ Every source `assert` in those 25 files is represented; successful calls and
 pytest node resolves in the collected suite. A repeated source/assertion in the
 original map and §A expansion is two ledger obligations, not two new tests.
 
-Collected suite: **83 functions, 330 parametrized nodes** —
-**15 functions / 42 nodes added in Stage A2**. Mutation proof:
-**80 killed mutants, 311 distinct nodes** (up from 71/276).
+Collected suite: **93 functions, 352 parametrized nodes** —
+**15 functions / 42 nodes added in Stage A2**, then **10 functions / 22 nodes
+added in Stage A3**. Mutation proof: **90 killed mutants, 327 distinct nodes**
+(up from Stage A2 80/311 and Stage A 71/276).
 Counts do not erase the unresolved rows or grant deletion authorization.

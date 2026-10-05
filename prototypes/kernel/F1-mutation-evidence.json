@@ -176,7 +176,8 @@
       "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[unset]",
       "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[item]",
       "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[actor_kind]",
-      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[role]"
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[role]",
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_conflict[expected_seq]"
     ]
   },
   {
@@ -883,6 +884,98 @@
     "failed_nodes": [
       "prototypes.kernel.tests.test_f1_cli::test_cli_unreachable_database[False]",
       "prototypes.kernel.tests.test_f1_cli::test_cli_unreachable_database[True]"
+    ]
+  },
+  {
+    "mutant": "expected_sequence_gt",
+    "file": "kernel.py",
+    "selection": "test_expected_sequence_stale_lower",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_expected_sequence_stale_lower"
+    ]
+  },
+  {
+    "mutant": "lease_subtype_erased",
+    "file": "kernel.py",
+    "selection": "test_transition_fencing[actor] or test_transition_fencing[released] or test_transition_fencing[swept] or test_heartbeat_refusals[actor]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_refusals[actor]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[actor]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[swept]",
+      "prototypes.kernel.tests.test_f1_core::test_transition_fencing[released]"
+    ]
+  },
+  {
+    "mutant": "replay_chain_check_removed",
+    "file": "kernel.py",
+    "selection": "test_replay_detects_damage[chain] or test_cli_chain_break_nonzero",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_chain_break_nonzero[False]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_chain_break_nonzero[True]",
+      "prototypes.kernel.tests.test_f1_replay::test_replay_detects_damage[chain]"
+    ]
+  },
+  {
+    "mutant": "inlock_retry_recheck_removed",
+    "file": "kernel.py",
+    "selection": "test_idempotency_recheck_under_item_lock",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_idempotency_recheck_under_item_lock"
+    ]
+  },
+  {
+    "mutant": "single_sequence_number_skipped",
+    "file": "kernel.py",
+    "selection": "test_concurrent_gap_free",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_concurrent_gap_free"
+    ]
+  },
+  {
+    "mutant": "heartbeat_item_lock_removed",
+    "file": "kernel.py",
+    "selection": "test_heartbeat_serializes_before_expiry_check",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_heartbeat_serializes_before_expiry_check"
+    ]
+  },
+  {
+    "mutant": "public_writer_unclassified",
+    "file": "kernel.py",
+    "selection": "test_public_methods_declare_access_and_gate_writes",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_admission::test_public_methods_declare_access_and_gate_writes"
+    ]
+  },
+  {
+    "mutant": "public_writer_declared_read",
+    "file": "kernel.py",
+    "selection": "test_public_methods_declare_access_and_gate_writes",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_admission::test_public_methods_declare_access_and_gate_writes"
+    ]
+  },
+  {
+    "mutant": "invalid_utf8_traceback_restored",
+    "file": "kernel.py",
+    "selection": "test_cli_invalid_utf8_workflow",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_cli::test_cli_invalid_utf8_workflow[False-json]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_invalid_utf8_workflow[False-yaml]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_invalid_utf8_workflow[True-json]",
+      "prototypes.kernel.tests.test_f1_cli::test_cli_invalid_utf8_workflow[True-yaml]"
+    ]
+  },
+  {
+    "mutant": "sequence_before_lease_fencing",
+    "file": "kernel.py",
+    "selection": "test_fencing_precedes_sequence",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[missing]",
+      "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[actor]",
+      "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[expired]",
+      "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[released]",
+      "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[takeover]"
     ]
   }
 ]
