@@ -1,0 +1,284 @@
+{
+  "candidate": "0c07472ce48031c97c9775dafa617abda022ac28",
+  "vectors": [
+    {
+      "vector": "pristine",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pristine"
+      ],
+      "exit_code": 0,
+      "stdout": "check-dist: ok\n",
+      "stderr": "",
+      "sdist_sha256": "a0f0367d690869821e572da70b987996d745362a81d0e3153ecb9a0e134cb019"
+    },
+    {
+      "vector": "reviewer-exact-concatenated-gzip",
+      "preparation": [
+        {
+          "command": [
+            "dd",
+            "if=/tmp/regista-c3-console-evidence/archive-vectors-final/trailer.gz",
+            "of=regista_hraedon-0.8.0.tar.gz",
+            "oflag=append",
+            "conv=notrunc"
+          ],
+          "stdout": "",
+          "stderr": "0+1 records in\n0+1 records out\n42 bytes copied, 2.7436e-05 s, 1.5 MB/s\n"
+        }
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/reviewer-exact-concatenated-gzip"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: gzip must contain exactly one complete member and no trailer\n",
+      "sdist_sha256": "dbf5a9b682e61ec22bfb7bdf3216d6f44bf613ff1119bb7006f98bd21de02786"
+    },
+    {
+      "vector": "raw-trailer",
+      "preparation": [
+        {
+          "command": [
+            "dd",
+            "if=/tmp/regista-c3-console-evidence/archive-vectors-final/sdist-trailer.txt",
+            "of=regista_hraedon-0.8.0.tar.gz",
+            "oflag=append",
+            "conv=notrunc"
+          ],
+          "stdout": "",
+          "stderr": "0+1 records in\n0+1 records out\n28 bytes copied, 2.7585e-05 s, 1.0 MB/s\n"
+        }
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/raw-trailer"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: gzip must contain exactly one complete member and no trailer\n",
+      "sdist_sha256": "dd163d9daef1ee186826c85310da179467926a26ff1503183393f00e8f0def07"
+    },
+    {
+      "vector": "tar-extra-data",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/tar-extra-data"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: bytes outside the canonical tar envelope\n",
+      "sdist_sha256": "9fea7a5796d3d14c7f38c4114b756a361ad339139cc84ff8b1ab6eae615afae9"
+    },
+    {
+      "vector": "tar-extra-padding",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/tar-extra-padding"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: bytes outside the canonical tar envelope\n",
+      "sdist_sha256": "7a2c9604fb785dcc0b0253adc6b4aaa411672e73b06b590b62d9da5d83f519c6"
+    },
+    {
+      "vector": "pkg-info-metadata-version",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-metadata-version"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "9fa571e5bb313ec451ae86ba647dd3d2d3c23d741eff84e56c514026ae703009"
+    },
+    {
+      "vector": "pkg-info-name",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-name"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\n",
+      "sdist_sha256": "8fa402c275b93d1598653baec3eae8b9ddbe3cea3d49ea0aa5c61ee7848935ed"
+    },
+    {
+      "vector": "pkg-info-version",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-version"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\n",
+      "sdist_sha256": "af387fa51b540808d47f343465993191dcbe342629df4e7186ab8b59ff377210"
+    },
+    {
+      "vector": "pkg-info-summary",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-summary"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "2457556c704765f0fce04e42b3d5d8593bc21a9e0ca436584ea19e6c28d1425a"
+    },
+    {
+      "vector": "pkg-info-license-file",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-license-file"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "35c96e356b7a2f25d01b9081c554b809e17ae441e3adee74fdcedb1187741850"
+    },
+    {
+      "vector": "pkg-info-classifier",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-classifier"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "4e180e37a1338272e5a435e0aba990bb59d300bfefa6334d2d37cb85e442616d"
+    },
+    {
+      "vector": "pkg-info-requires-python",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-requires-python"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "e0d200ae0dfe478bd76d6b225b2d73363c4a75b36b56bb21c44e6b95fb5a4638"
+    },
+    {
+      "vector": "pkg-info-requires-dist",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-requires-dist"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "79de35241dacfff39f46afdf492335d444f990cae9da6b5c4a41e2a1e9a46619"
+    },
+    {
+      "vector": "pkg-info-provides-extra",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-provides-extra"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "cc25e4326c0e95115dc9b1aa976332aebc42198a4a52cd0ea60dd572754b9cbc"
+    },
+    {
+      "vector": "pkg-info-description-content-type",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-description-content-type"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "de5b8b49439d86a3a9b5c21920c589fb40808c136aefc60d3d2f976ad28d6022"
+    },
+    {
+      "vector": "pkg-info-description",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/pkg-info-description"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n",
+      "sdist_sha256": "5ddd5e8743b2f8484b189764137baf356c428dee81f579b792947e08c2bff04d"
+    },
+    {
+      "vector": "wrong-root",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c3-console-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c3-console-evidence/archive-vectors-final/wrong-root"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\n",
+      "sdist_sha256": "339ebd43b614520ce3dcd727899358b9e9c79298bdff48db6ed0e9ebd1dc548c"
+    }
+  ]
+}

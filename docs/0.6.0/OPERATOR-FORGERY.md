@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # OPERATOR-FORGERY.md — the residual threat model after 0.6.0 (WI-007)
 
 **Status:** FROZEN CONTRACT, Stage 0. Normative for what 0.6.0 may claim.

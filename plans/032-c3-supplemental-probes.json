@@ -1,0 +1,34 @@
+{
+  "candidate": "0c07472ce48031c97c9775dafa617abda022ac28",
+  "results": [
+    {
+      "probe": "special-name-sibling-preservation",
+      "schema": "$user",
+      "refusal": "reserved PostgreSQL schema name: '$user'"
+    },
+    {
+      "probe": "special-name-sibling-preservation",
+      "schema": "pg_temp",
+      "refusal": "reserved PostgreSQL schema name: 'pg_temp'"
+    },
+    {
+      "probe": "sibling-catalog",
+      "relations": [
+        "sentinel"
+      ],
+      "sentinel": "preexisting",
+      "kernel_tables": 0
+    },
+    {
+      "probe": "clean-admission-statement-timeout",
+      "error": "DatabaseOperationError",
+      "cause": "QueryCanceled"
+    },
+    {
+      "probe": "timeout-rollback-and-pool-reuse",
+      "after_timeout": "open/one event",
+      "valid_replacement": "doing",
+      "drift": []
+    }
+  ]
+}

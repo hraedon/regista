@@ -358,7 +358,7 @@ question for the estate, not a reason to keep it in a published MVP.
 - ~~A prototype `events` row and project-open path without required signing.~~
   **Discharged** — see `prototypes/kernel/`, and §9 below for what it settles.
 - ~~F0a scenario validation.~~ **Both scenarios run**; see
-  `prototypes/kernel/F0a-report.md`.
+  `plans/032-f0-inventory/F0a-report.md`.
 - ~~Per-file test dispositions.~~ **Discharged** — all 185 files carry one; see
   §4 and `plans/032-f0-inventory/`. Five remain UNCLEAR and need a ruling.
 - ~~Packaging, dependency and documentation deletion maps.~~ **Discharged** — see
@@ -368,7 +368,7 @@ question for the estate, not a reason to keep it in a published MVP.
   `README.md` subset is urgent because README is the PyPI long description and
   therefore the only published one.
 - **A quickstart walkthrough by someone who has not seen the code.** F0a asks for
-  it explicitly and it cannot be self-reported; see `prototypes/kernel/F0a-report.md` §6.
+  it explicitly and it cannot be self-reported; see `plans/032-f0-inventory/F0a-report.md` §6.
 - **A ruling on link-aware "blocked".** The link graph is stored but the discovery
   surface cannot ask whether a blocking item is still unfinished. Plan 032 both
   permits state-based blocked queries and forbids a dependency scheduler, so this

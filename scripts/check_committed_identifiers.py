@@ -85,7 +85,7 @@ _GUARDED_DIRS = frozenset({"samples"})
 #
 # A root-level .env is the classic credential leak; .env.example is the
 # deliberately tracked template and is exempt. Scoped to the ROOT so a fixture
-# like tests/fixtures/.env.broken stays possible.
+# like a temporary .env.broken fixture stays possible.
 #
 # From touchstone, which had both while the template guarded only samples/.
 _EDITOR_SWAP_SUFFIXES = frozenset({".swp", ".swo"})

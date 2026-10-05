@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../spec.md).
+
 # Suite Configuration Contract
 
 > **Plan 025 WI-1.1 / WI-3.1 / WI-4.1** — the canonical config vocabulary,

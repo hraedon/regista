@@ -1,0 +1,2 @@
+# Regenerate with uv pip compile --universal --generate-hashes.
+twine==7.0.0

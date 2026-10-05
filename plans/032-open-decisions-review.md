@@ -309,7 +309,7 @@ materialize one themselves. Revisit built-in composition after concrete use.
 
 **Measured evidence relevant to D1, D7, D13, and D17.**
 
-I ran focused probes against the unchanged [prototype implementation](../prototypes/kernel/kernel.py)
+I ran focused probes against the unchanged [prototype implementation](../src/regista/kernel.py)
 on CPython 3.14.4 and a
 fresh disposable PostgreSQL 15.17 container. It was removed afterward. The
 repository's configured localhost test database was unavailable, so no existing

@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../spec.md).
+
 # Review Assurance: Gate Honesty Under a Single Model
 
 > Plan 027 — Review assurance: gate honesty under a single model

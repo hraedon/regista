@@ -1,30 +1,17 @@
 .PHONY: all lint typecheck test test-files cov check clean
 
 VENV := .venv
-PYTHON := $(VENV)/bin/python
-RUFF := $(VENV)/bin/ruff
-MYPY := $(VENV)/bin/mypy
-PYTEST := $(VENV)/bin/pytest
-
 all: check
-
 check: lint typecheck test
-
 lint:
-	$(RUFF) check src/ tests/
-
+	$(VENV)/bin/ruff check src/ tests/ examples/ scripts/
 typecheck:
-	$(MYPY)
-
+	$(VENV)/bin/mypy
 test:
-	$(PYTEST) tests/ -v
-
+	$(VENV)/bin/python -m pytest tests/ -v
 test-files:
-	$(PYTEST) $(FILES) -v
-
+	$(VENV)/bin/python -m pytest $(FILES) -v
 cov:
-	$(PYTEST) tests/ -v --cov=regista --cov-report=term-missing
-
+	$(VENV)/bin/python -m pytest tests/ --cov=regista --cov-report=term-missing
 clean:
-	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
+	find src tests examples scripts -type d -name __pycache__ -exec rm -rf {} +

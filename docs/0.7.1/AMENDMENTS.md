@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # Regista 0.7.1 Contract Amendments
 
 **Status:** Normative for regista 0.7.1. All other 0.7.0 and earlier v6 rules

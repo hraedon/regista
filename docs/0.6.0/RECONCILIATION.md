@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # Regista 0.6.0 specification reconciliation
 
 **Status:** normative integration overlay; implementation may begin when the conformance fixtures

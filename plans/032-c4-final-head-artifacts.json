@@ -1,0 +1,80 @@
+{
+  "evidence_commit": "4548ac26aae6ef42306a28a87889a7a6acb0476a",
+  "artifact_candidate": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+  "artifact_sha256": {
+    "regista_hraedon-0.8.0.tar.gz": "6a1341fef8cbd464281989115178beb6ebbecd8ca0369a7c7396828cb6094b99",
+    "regista_hraedon-0.8.0-py3-none-any.whl": "224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8"
+  },
+  "independent_rebuild_byte_identical": true,
+  "records": [
+    {
+      "command": [
+        "git",
+        "clone",
+        "--no-local",
+        "--no-hardlinks",
+        "/projects/.worktrees/regista-f1b",
+        "/tmp/regista-c4-evidence-head"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "Cloning into '/tmp/regista-c4-evidence-head'...\n"
+    },
+    {
+      "command": [
+        "uv",
+        "venv",
+        "--python",
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-evidence-head/.release-build"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "Using CPython 3.14.8 interpreter at: .venv/bin/python\nCreating virtual environment at: /tmp/regista-c4-evidence-head/.release-build\nActivate with: source /tmp/regista-c4-evidence-head/.release-build/bin/activate\n"
+    },
+    {
+      "command": [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "/tmp/regista-c4-evidence-head/.release-build/bin/python",
+        "--require-hashes",
+        "-r",
+        "/tmp/regista-c4-evidence-head/.github/build-requirements.txt"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "Using Python 3.14.8 environment at: /tmp/regista-c4-evidence-head/.release-build\nResolved 7 packages in 83ms\nInstalled 7 packages in 11ms\n + hatchling==1.32.4\n + packaging==26.3\n + pathspec==1.1.1\n + pip==26.2.1\n + pluggy==1.6.0\n + tomlkit==0.15.1\n + trove-classifiers==2026.9.21.13\n"
+    },
+    {
+      "command": [
+        "uv",
+        "build",
+        "--python",
+        "/tmp/regista-c4-evidence-head/.release-build/bin/python",
+        "--no-build-isolation"
+      ],
+      "cwd": "/tmp/regista-c4-evidence-head",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/regista_hraedon-0.8.0.tar.gz\nSuccessfully built dist/regista_hraedon-0.8.0-py3-none-any.whl\n"
+    },
+    {
+      "command": [
+        "/tmp/regista-c4-evidence-head/.release-build/bin/python",
+        "scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "dist"
+      ],
+      "cwd": "/tmp/regista-c4-evidence-head",
+      "exit_code": 0,
+      "stdout": "check-dist: ok\n",
+      "stderr": ""
+    }
+  ]
+}

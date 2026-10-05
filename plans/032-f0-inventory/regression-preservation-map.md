@@ -26,7 +26,7 @@ import claim was verified with `grep -rl "_v6_fixtures" tests/*.py
 tests/sidecar/*.py`. The `test_in_memory_conformance.py` test count was
 produced by `grep -cE "^\s*def test_"` against the file, not asserted from
 memory. Kernel behaviour claims (which mutations do/don't emit events) were
-read directly from `prototypes/kernel/kernel.py` and `schema.sql` and cross-
+read directly from `src/regista/kernel.py` and `schema.sql` and cross-
 checked against `src/regista/_contract.py`, `_reducer.py`, `_links.py`, and
 `_in_memory_replay.py` in the current tree. `kernel.py`, `schema.sql`, and
 `test_mutations.py` are being actively edited by another agent while this was

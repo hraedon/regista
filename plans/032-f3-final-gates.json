@@ -1,0 +1,406 @@
+{
+  "candidate": "73b3f2efaedca52a8a4c964a8b78e33447615a8f",
+  "source_evidence_commit": "75dcb8ab8e9057591fd4b4ecbfd664e8a8b196c4",
+  "commands": [
+    {
+      "gate": "ruff",
+      "command": [
+        ".venv/bin/ruff",
+        "check",
+        "src/",
+        "tests/",
+        "examples/",
+        "scripts/"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.01,
+      "stdout": "All checks passed!\n",
+      "stderr": ""
+    },
+    {
+      "gate": "mypy",
+      "command": [
+        ".venv/bin/mypy"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.14,
+      "stdout": "Success: no issues found in 5 source files\n",
+      "stderr": ""
+    },
+    {
+      "gate": "reference pin",
+      "command": [
+        ".venv/bin/python",
+        "scripts/generate_reference.py",
+        "--check"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.24,
+      "stdout": "API and CLI references are current.\n",
+      "stderr": ""
+    },
+    {
+      "gate": "lockfile",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.03,
+      "stdout": "",
+      "stderr": "Resolved 31 packages in 4ms\n"
+    },
+    {
+      "gate": "full suite 3.14",
+      "command": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/",
+        "-q"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "user=regista_test password=<disposable-password> dbname=f3_final_314_c1457aa85c2c host=127.0.0.1 port=55499",
+      "exit_code": 0,
+      "duration_seconds": 372.83,
+      "stdout": "........................................................................ [  7%]\n........................................................................ [ 15%]\n........................................................................ [ 23%]\n........................................................................ [ 31%]\n........................................................................ [ 39%]\n........................................................................ [ 47%]\n........................................................................ [ 54%]\n........................................................................ [ 62%]\n........................................................................ [ 70%]\n........................................................................ [ 78%]\n........................................................................ [ 86%]\n................................................. [ 91%]\n.................................. [ 95%]\n............................................                       [100%]\n919 passed, 67 subtests passed in 371.96s (0:06:11)\n",
+      "stderr": ""
+    },
+    {
+      "gate": "full suite 3.11",
+      "command": [
+        "/tmp/regista-py311/bin/python",
+        "-m",
+        "pytest",
+        "tests/",
+        "-q"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "user=regista_test password=<disposable-password> dbname=f3_final_311_c7d7ab74909f host=127.0.0.1 port=55499",
+      "exit_code": 1,
+      "duration_seconds": 372.88,
+      "stdout": ".................F...................................................... [  7%]\n........................................................................ [ 15%]\n....................FF.................................................. [ 23%]\n........................................................................ [ 31%]\n........................................................................ [ 39%]\n........................................................................ [ 47%]\n........................................................................ [ 54%]\n........................................................................ [ 62%]\n........................................................................ [ 70%]\n........................................................................ [ 78%]\n........................................................................ [ 86%]\n................................................. [ 91%]\n.................................. [ 95%]\n............................................                       [100%]\n=================================== FAILURES ===================================\n_______ test_a_real_build_passes_check_dist_including_the_sdist_rebuild ________\n\ntmp_path = PosixPath('/tmp/pytest-of-itadmin/pytest-1116/test_a_real_build_passes_check0')\n\n    @pytest.mark.skipif(shutil.which(\"uv\") is None, reason=\"needs uv to build real artifacts\")\n    def test_a_real_build_passes_check_dist_including_the_sdist_rebuild(tmp_path: Path) -> None:\n        \"\"\"Builds from a clean clone of HEAD: reviewed bytes are committed bytes.\"\"\"\n        dist, clone = tmp_path / \"dist\", tmp_path / \"clone\"\n        subprocess.run([\"git\", \"clone\", \"-q\", str(REPO_ROOT), str(clone)], check=True)\n        subprocess.run(\n            [\"uv\", \"build\", \"-q\", \"--out-dir\", str(dist), str(clone)],\n            check=True,\n            env={**os.environ, \"UV_CACHE_DIR\": str(tmp_path / \"uv-cache\")},\n        )\n>       assert guard.check_dist(guard.load_ledger(), dist, repo_root=clone) == []\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_distribution_vectors.py:108: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nscripts/check_published_migrations.py:1023: in check_dist\n    rebuilt = _rebuild(label, argv, sdist, Path(tmp))\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nlabel = 'pip'\nargv = ['/tmp/regista-py311/bin/python', '-m', 'pip', 'wheel', '--no-deps', '--wheel-dir', ...]\nsdist = PosixPath('/tmp/pytest-of-itadmin/pytest-1116/test_a_real_build_passes_check0/dist/regista_hraedon-0.8.0.tar.gz')\nout = PosixPath('/tmp/tmpmmt9dzin')\n\n    def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:\n        cmd = [a.format(out=out, sdist=sdist) for a in argv]\n        # Keep uv's cache out of the reviewed checkout and artifact directory. A\n        # caller-level UV_CACHE_DIR inside the source tree would otherwise mutate\n        # the very input this guard is authenticating.\n        env = {k: v for k, v in os.environ.items() if not k.startswith(\"GIT_\")}\n        env[\"UV_CACHE_DIR\"] = str(out / \".uv-cache\")\n        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)\n        if proc.returncode != 0:\n>           raise GuardError(f\"{sdist.name}: {label} could not build a wheel from it\")\nE           check_published_migrations.GuardError: regista_hraedon-0.8.0.tar.gz: pip could not build a wheel from it\n\nscripts/check_published_migrations.py:898: GuardError\n_________ test_round4_repros_fail_against_a_real_build[requires-dist] __________\n\ntmp_path = PosixPath('/tmp/pytest-of-itadmin/pytest-1116/test_round4_repros_fail_agains0')\nkind = 'requires-dist'\n\n    @pytest.mark.skipif(shutil.which(\"uv\") is None, reason=\"needs uv to build real artifacts\")\n    @pytest.mark.parametrize(\"kind\", [\"requires-dist\", \"entry-points\"])\n    def test_round4_repros_fail_against_a_real_build(tmp_path: Path, kind: str) -> None:\n        \"\"\"Daybreak round-4 B1, end to end: a direct-URL dependency (a 51st migration\n        after install) and an edited entry_points.txt, each with a valid RECORD, are\n        refused by the real pip and uv rebuilds.\"\"\"\n        dist, clone = tmp_path / \"dist\", tmp_path / \"clone\"\n        subprocess.run([\"git\", \"clone\", \"-q\", str(REPO_ROOT), str(clone)], check=True)\n        env = {**os.environ, \"UV_CACHE_DIR\": str(tmp_path / \"uv-cache\")}\n        subprocess.run([\"uv\", \"build\", \"-q\", \"--out-dir\", str(dist), str(clone)], check=True, env=env)\n        whl = next(dist.glob(\"*.whl\"))\n        blob = whl.read_bytes()\n        whl.write_bytes(\n            _with_metadata_line(blob, REQUIRES_DIST_URL) if kind == \"requires-dist\"\n            else _with_entry_points(blob, b\"[console_scripts]\\nregista = os:system\\n\")\n        )\n        assert guard.read_wheel(whl.read_bytes(), whl.name) is not None  # structurally valid\n>       problems = guard.check_dist(guard.load_ledger(), dist, repo_root=clone)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_distribution_vectors.py:1311: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nscripts/check_published_migrations.py:1023: in check_dist\n    rebuilt = _rebuild(label, argv, sdist, Path(tmp))\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nlabel = 'pip'\nargv = ['/tmp/regista-py311/bin/python', '-m', 'pip', 'wheel', '--no-deps', '--wheel-dir', ...]\nsdist = PosixPath('/tmp/pytest-of-itadmin/pytest-1116/test_round4_repros_fail_agains0/dist/regista_hraedon-0.8.0.tar.gz')\nout = PosixPath('/tmp/tmp85esk6ge')\n\n    def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:\n        cmd = [a.format(out=out, sdist=sdist) for a in argv]\n        # Keep uv's cache out of the reviewed checkout and artifact directory. A\n        # caller-level UV_CACHE_DIR inside the source tree would otherwise mutate\n        # the very input this guard is authenticating.\n        env = {k: v for k, v in os.environ.items() if not k.startswith(\"GIT_\")}\n        env[\"UV_CACHE_DIR\"] = str(out / \".uv-cache\")\n        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)\n        if proc.returncode != 0:\n>           raise GuardError(f\"{sdist.name}: {label} could not build a wheel from it\")\nE           check_published_migrations.GuardError: regista_hraedon-0.8.0.tar.gz: pip could not build a wheel from it\n\nscripts/check_published_migrations.py:898: GuardError\n__________ test_round4_repros_fail_against_a_real_build[entry-points] __________\n\ntmp_path = PosixPath('/tmp/pytest-of-itadmin/pytest-1116/test_round4_repros_fail_agains1')\nkind = 'entry-points'\n\n    @pytest.mark.skipif(shutil.which(\"uv\") is None, reason=\"needs uv to build real artifacts\")\n    @pytest.mark.parametrize(\"kind\", [\"requires-dist\", \"entry-points\"])\n    def test_round4_repros_fail_against_a_real_build(tmp_path: Path, kind: str) -> None:\n        \"\"\"Daybreak round-4 B1, end to end: a direct-URL dependency (a 51st migration\n        after install) and an edited entry_points.txt, each with a valid RECORD, are\n        refused by the real pip and uv rebuilds.\"\"\"\n        dist, clone = tmp_path / \"dist\", tmp_path / \"clone\"\n        subprocess.run([\"git\", \"clone\", \"-q\", str(REPO_ROOT), str(clone)], check=True)\n        env = {**os.environ, \"UV_CACHE_DIR\": str(tmp_path / \"uv-cache\")}\n        subprocess.run([\"uv\", \"build\", \"-q\", \"--out-dir\", str(dist), str(clone)], check=True, env=env)\n        whl = next(dist.glob(\"*.whl\"))\n        blob = whl.read_bytes()\n        whl.write_bytes(\n            _with_metadata_line(blob, REQUIRES_DIST_URL) if kind == \"requires-dist\"\n            else _with_entry_points(blob, b\"[console_scripts]\\nregista = os:system\\n\")\n        )\n        assert guard.read_wheel(whl.read_bytes(), whl.name) is not None  # structurally valid\n>       problems = guard.check_dist(guard.load_ledger(), dist, repo_root=clone)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_distribution_vectors.py:1311: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nscripts/check_published_migrations.py:1023: in check_dist\n    rebuilt = _rebuild(label, argv, sdist, Path(tmp))\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nlabel = 'pip'\nargv = ['/tmp/regista-py311/bin/python', '-m', 'pip', 'wheel', '--no-deps', '--wheel-dir', ...]\nsdist = PosixPath('/tmp/pytest-of-itadmin/pytest-1116/test_round4_repros_fail_agains1/dist/regista_hraedon-0.8.0.tar.gz')\nout = PosixPath('/tmp/tmpdgy48415')\n\n    def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:\n        cmd = [a.format(out=out, sdist=sdist) for a in argv]\n        # Keep uv's cache out of the reviewed checkout and artifact directory. A\n        # caller-level UV_CACHE_DIR inside the source tree would otherwise mutate\n        # the very input this guard is authenticating.\n        env = {k: v for k, v in os.environ.items() if not k.startswith(\"GIT_\")}\n        env[\"UV_CACHE_DIR\"] = str(out / \".uv-cache\")\n        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)\n        if proc.returncode != 0:\n>           raise GuardError(f\"{sdist.name}: {label} could not build a wheel from it\")\nE           check_published_migrations.GuardError: regista_hraedon-0.8.0.tar.gz: pip could not build a wheel from it\n\nscripts/check_published_migrations.py:898: GuardError\n=========================== short test summary info ============================\nFAILED tests/test_distribution_vectors.py::test_a_real_build_passes_check_dist_including_the_sdist_rebuild\nFAILED tests/test_distribution_vectors.py::test_round4_repros_fail_against_a_real_build[requires-dist]\nFAILED tests/test_distribution_vectors.py::test_round4_repros_fail_against_a_real_build[entry-points]\n3 failed, 916 passed, 67 subtests passed in 372.29s (0:06:12)\n",
+      "stderr": ""
+    },
+    {
+      "gate": "139-mutant proof",
+      "command": [
+        ".venv/bin/python",
+        "-c",
+        "import importlib.util, subprocess, sys; s=importlib.util.spec_from_file_location('proof','scripts/prove_f1.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); raise SystemExit(subprocess.call([sys.executable,'scripts/prove_f1.py',*[x[0] for x in m.MUTANTS]]))"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "user=regista_test password=<disposable-password> dbname=f3_final_mutants_e490c4b49eb7 host=127.0.0.1 port=55499",
+      "exit_code": 0,
+      "duration_seconds": 683.22,
+      "stdout": "CONTROL passed: 899 passed, 20 deselected, 67 subtests passed in 320.81s (0:05:20)\nKILLED namespace_name_unbounded_a4: 1 assertions\nKILLED history_before_ignored_a4: 1 assertions\nKILLED history_before_inclusive_a4: 1 assertions\nKILLED history_newest_prefix_a4: 1 assertions\nKILLED history_suffix_descending_a4: 1 assertions\nKILLED history_cursor_refusal_removed_a4: 2 assertions\nKILLED replay_transition_names_unchecked_a4: 2 assertions\nKILLED replay_transition_latest_version_a4: 1 assertions\nKILLED replay_unknown_is_drift_a4: 1 assertions\nKILLED namespace_only_first_page_a4: 1 assertions\nKILLED namespace_skips_projection_only_a4: 3 assertions\nKILLED namespace_skips_orphans_a4: 3 assertions\nKILLED namespace_materialized_a4: 1 assertions\nKILLED cli_namespace_drift_exit_zero_a4: 2 assertions\nKILLED json_size_unbounded_a4: 6 assertions\nKILLED merged_fields_unbounded_a4: 1 assertions\nKILLED names_unbounded_a4: 6 assertions\nKILLED names_count_characters_a4: 1 assertions\nKILLED workflow_unbounded_a4: 1 assertions\nKILLED unset_unbounded_a4: 1 assertions\nKILLED replay_diagnostics_unbounded_a4: 1 assertions\nKILLED large_workflow_refusal_traceback_a4: 1 assertions\nKILLED cli_show_workflow_hidden: 1 assertions\nKILLED cli_list_workflow_hidden: 1 assertions\nKILLED event_sequence_constraint_removed: 1 assertions\nKILLED json_key_order_not_canonical: 1 assertions\nKILLED legacy_document_keys_accepted: 10 assertions\nKILLED history_order_reversed: 1 assertions\nKILLED database_clock_replaced: 1 assertions\nKILLED open_existing_gate_removed: 2 assertions\nKILLED cli_existing_gate_removed: 16 assertions\nKILLED lease_fencing: 7 assertions\nKILLED heartbeat_owner_attempt_expiry: 4 assertions\nKILLED claim_contention: 3 assertions\nKILLED attempt_reissued: 1 assertions\nKILLED release_ignored: 1 assertions\nKILLED heartbeat_no_extension: 1 assertions\nKILLED sweep_live_leases: 2 assertions\nKILLED retry_conflict_accepted: 9 assertions\nKILLED retry_returns_latest: 1 assertions\nKILLED partial_commit: 2 assertions\nKILLED search_path_injection: 1 assertions\nKILLED namespace_shared: 1 assertions\nKILLED type_unchecked: 1 assertions\nKILLED workflow_ignored: 1 assertions\nKILLED role_gate_removed: 1 assertions\nKILLED required_gate_removed: 4 assertions\nKILLED terminal_gate_removed: 1 assertions\nKILLED from_state_gate_removed: 1 assertions\nKILLED reserved_payload_allowed: 5 assertions\nKILLED field_schema_unenforced: 16 assertions\nKILLED json_types_unchecked: 15 assertions\nKILLED clear_collision_allowed: 1 assertions\nKILLED clear_not_recorded: 1 assertions\nKILLED expected_sequence_ignored: 2 assertions\nKILLED schema_refusal_removed: 4 assertions\nKILLED workflow_semantics_unchecked: 13 assertions\nKILLED workflow_pinning_removed: 1 assertions\nKILLED link_self_allowed: 1 assertions\nKILLED link_type_unchecked: 1 assertions\nKILLED link_endpoints_unchecked: 1 assertions\nKILLED query_limits_ignored: 2 assertions\nKILLED nested_filter_allowed: 2 assertions\nKILLED bad_direction_allowed: 1 assertions\nKILLED unknown_satisfaction_allowed: 1 assertions\nKILLED replay_materialized: 1 assertions\nKILLED snapshot_read_committed: 1 assertions\nKILLED prepared_cache_restored: 1 assertions\nKILLED cli_failures_exit_zero: 31 assertions\nKILLED document_rules_ignored: 11 assertions\nKILLED invalid_files_accepted: 4 assertions\nKILLED workflow_version_assertion_ignored: 1 assertions\nKILLED workflow_duplicate_version: 1 assertions\nKILLED replay_always_clean: 12 assertions\nKILLED absent_link_removal_silent: 1 assertions\nKILLED missing_target_silent: 1 assertions\nKILLED dead_cursor_restarts: 1 assertions\nKILLED empty_states_allowed: 1 assertions\nKILLED unknown_transition_accepted: 1 assertions\nKILLED workflow_name_ignored: 1 assertions\nKILLED transition_releases_lease: 1 assertions\nKILLED cli_bad_exits_zero: 4 assertions\nKILLED namespace_shared_role: 1 assertions\nKILLED expected_sequence_always_refused: 1 assertions\nKILLED retry_lookup_removed: 3 assertions\nKILLED sequence_gaps: 1 assertions\nKILLED release_fence_removed: 1 assertions\nKILLED initializer_missing: 1 assertions\nKILLED workflow_lock_missing: 1 assertions\nKILLED write_schema_gate_removed: 18 assertions\nKILLED missing_dsn_exit_one: 14 assertions\nKILLED append_writer_reintroduced: 1 assertions\nKILLED invalid_ttl_allowed: 10 assertions\nKILLED cli_success_exits_one: 41 assertions\nKILLED replay_resets_fencing: 1 assertions\nKILLED duplicate_link_refused: 1 assertions\nKILLED query_order_reversed: 8 assertions\nKILLED initializer_missing_catalog: 1 assertions\nKILLED history_missing: 2 assertions\nKILLED replay_ignores_handoff_fields: 1 assertions\nKILLED replay_writes: 1 assertions\nKILLED cli_connect_outside_error_handler: 2 assertions\nKILLED expected_sequence_gt: 1 assertions\nKILLED lease_subtype_erased: 4 assertions\nKILLED replay_chain_check_removed: 3 assertions\nKILLED inlock_retry_recheck_removed: 1 assertions\nKILLED single_sequence_number_skipped: 1 assertions\nKILLED heartbeat_item_lock_removed: 1 assertions\nKILLED public_writer_unclassified: 1 assertions\nKILLED public_writer_declared_read: 1 assertions\nKILLED invalid_utf8_traceback_restored: 4 assertions\nKILLED sequence_before_lease_fencing: 5 assertions\nKILLED malformed_payload_reducer_unchecked_a5: 42 assertions\nKILLED malformed_payload_report_hidden_a5: 42 assertions\nKILLED create_retry_lookup_removed_a5: 3 assertions\nKILLED create_conflicting_retry_accepted_a5: 8 assertions\nKILLED create_key_lock_removed_a5: 1 assertions\nKILLED cli_create_key_ignored_a5: 1 assertions\nKILLED read_diagnostics_writable_gate_a5: 8 assertions\nKILLED read_transactions_writable_a5: 8 assertions\nKILLED raw_file_limit_after_parse_a5: 2 assertions\nKILLED raw_text_limit_removed_a5: 2 assertions\nKILLED yaml_alias_guard_removed_a5: 4 assertions\nKILLED workflow_refusal_type_leaks_a5: 6 assertions\nKILLED projection_summary_omitted_a5: 1 assertions\nKILLED history_newest_truthy_a5: 6 assertions\nKILLED history_unknown_empty_a5: 1 assertions\nKILLED read_names_unbounded_a5: 10 assertions\nKILLED read_state_count_unbounded_a5: 2 assertions\nKILLED read_state_bytes_unbounded_a5: 1 assertions\nKILLED release_docstring_lost_a5: 1 assertions\nKILLED create_hash_omits_workflow_a5: 1 assertions\nKILLED create_hash_omits_workflow_version_a5: 1 assertions\nKILLED create_hash_omits_type_a5: 1 assertions\nKILLED create_hash_omits_actor_id_a5: 1 assertions\nKILLED create_hash_omits_actor_kind_a5: 1 assertions\nKILLED create_hash_omits_fields_a5: 1 assertions\nKILLED stored_json_decoder_exception_leaks_a5: 1 assertions\nKILLED workflow_json_decoder_exception_leaks_a5: 1 assertions\n139 mutants killed; 467 distinct test nodes proved\n",
+      "stderr": ""
+    },
+    {
+      "gate": "uv build",
+      "command": [
+        "uv",
+        "build"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.9,
+      "stdout": "",
+      "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/regista_hraedon-0.8.0.tar.gz\nSuccessfully built dist/regista_hraedon-0.8.0-py3-none-any.whl\n"
+    },
+    {
+      "gate": "twine",
+      "command": [
+        "uvx",
+        "twine",
+        "check",
+        "dist/.gitignore",
+        "dist/regista_hraedon-0.8.0-py3-none-any.whl",
+        "dist/regista_hraedon-0.8.0.tar.gz"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 1,
+      "duration_seconds": 0.43,
+      "stdout": "Checking dist/regista_hraedon-0.8.0-py3-none-any.whl: PASSED\nChecking dist/.gitignore: ERROR    InvalidDistribution: Unknown distribution format: '.gitignore'         \n",
+      "stderr": ""
+    },
+    {
+      "gate": "uv build",
+      "command": [
+        "uv",
+        "build"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.78,
+      "stdout": "",
+      "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/regista_hraedon-0.8.0.tar.gz\nSuccessfully built dist/regista_hraedon-0.8.0-py3-none-any.whl\n"
+    },
+    {
+      "gate": "twine",
+      "command": [
+        "uvx",
+        "twine",
+        "check",
+        "dist/.gitignore",
+        "dist/regista_hraedon-0.8.0-py3-none-any.whl",
+        "dist/regista_hraedon-0.8.0.tar.gz"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 1,
+      "duration_seconds": 0.33,
+      "stdout": "Checking dist/regista_hraedon-0.8.0-py3-none-any.whl: PASSED\nChecking dist/.gitignore: ERROR    InvalidDistribution: Unknown distribution format: '.gitignore'         \n",
+      "stderr": ""
+    },
+    {
+      "gate": "uv build",
+      "command": [
+        "uv",
+        "build"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.74,
+      "stdout": "",
+      "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/regista_hraedon-0.8.0.tar.gz\nSuccessfully built dist/regista_hraedon-0.8.0-py3-none-any.whl\n"
+    },
+    {
+      "gate": "twine",
+      "command": [
+        "uvx",
+        "twine",
+        "check",
+        "dist/regista_hraedon-0.8.0-py3-none-any.whl",
+        "dist/regista_hraedon-0.8.0.tar.gz"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.31,
+      "stdout": "Checking dist/regista_hraedon-0.8.0-py3-none-any.whl: PASSED\nChecking dist/regista_hraedon-0.8.0.tar.gz: PASSED\n",
+      "stderr": ""
+    },
+    {
+      "gate": "artifact SHA-256",
+      "command": [
+        "sha256sum",
+        "dist/regista_hraedon-0.8.0-py3-none-any.whl",
+        "dist/regista_hraedon-0.8.0.tar.gz"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.0,
+      "stdout": "a5881f537b5495f6bb78a5e079122c57e7cc4d3965d1dfa42dcd8c8badb555b4  dist/regista_hraedon-0.8.0-py3-none-any.whl\nf7c2a8066f993f09d3ef149f710536d318bd1074d4812e7aefe5625f1b6812b8  dist/regista_hraedon-0.8.0.tar.gz\n",
+      "stderr": ""
+    },
+    {
+      "gate": "wheel and sdist installed examples, restart, recovery and old-schema refusals",
+      "command": [
+        ".venv/bin/python",
+        "scripts/qualify_distribution.py",
+        "dist",
+        "--dsn",
+        "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+        "--output",
+        "/tmp/regista-f3-after-last-edit"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 33.87,
+      "stdout": "usage: regista [-h] [--dsn DSN] [--schema SCHEMA] [--json]\n               {init,health,expire-leases,workflow,create,show,list,claim,heartbeat,lease,release,transition,link,unlink,history,check-history} ...\n\nSmall administration and participation CLI over the kernel.\n\npositional arguments:\n  {init,health,expire-leases,workflow,create,show,list,claim,heartbeat,lease,release,transition,link,unlink,history,check-history}\n    init                create the kernel schema in an empty destination\n    health              schema version and basic counts\n    expire-leases       sweep expired leases (never live ones)\n    workflow            workflow registry\n    create              create a work item\n    show                show one work item\n    list                find work; with no filter this lists EVERYTHING,\n                        leased items included\n    claim               acquire a lease\n    heartbeat           extend a live lease you hold\n    lease               who holds this item's lease, if anyone\n    release             release a lease\n    transition          make a validated transition\n    link                create a typed link\n    unlink              remove a typed link\n    history             ordered event history (one page)\n    check-history       check history read-only; exits 1 on drift\n\noptions:\n  -h, --help            show this help message and exit\n  --dsn DSN             PostgreSQL DSN (or set REGISTA_DSN)\n  --schema SCHEMA       schema to use (default: public)\n  --json                machine-readable output\n/tmp/regista-f3-after-last-edit/wheel/venv/lib/python3.14/site-packages/regista/__init__.py\n   \u2713 connected and initialised \u2014 no keys, no trust log, no genesis ceremony\n\n1. A discovery script files remediation work with domain fields and a link.\n   \u2713 filed 844606cb-722f-4d87-a424-686d5d70899c (state=open, cve=CVE-2026-1337)\n   \u2713 linked -> 664da436-c22d-4c51-8d52-3816926862c9 as 'blocks'\n   \u2713 blocked by an unfinished 'blocks' source: ['664da436-c22d-4c51-8d52-3816926862c9']\n\n2. Two independently running worker processes contend. Only one may own it.\n   \u2713 worker-1: holds attempt 1\n   \u2298 refused: worker-2: work item 844606cb-722f-4d87-a424-686d5d70899c is held by 'worker-1' until 2026-10-05T07:42:45.425620+00:00\n   \u2713 exactly one owner: worker-1, attempt 1\n\n3. The owner works. A lease means the HOLDER writes \u2014 nobody else.\n   \u2713 start -> in_progress\n   \u2298 refused: submit without the required field: 'submit' requires field(s) ['remediation_note']: ['remediation_note'] are not set on the item. Supply them with this transition using the fields= argument: transition(..., fields={'remediation_note': ...})\n   \u2298 refused: transition refused: attempt 1 on 844606cb-722f-4d87-a424-686d5d70899c is held by 'worker-1', not 'worker-9'. A write must be attributed to the lease holder. (This is ownership, not authentication: actor_id is caller-supplied attribution either way.)\n   \u2713 submit -> in_review (note recorded)\n   \u2713 the owner released the lease \u2014 handing off means giving up ownership\n\n4. The reviewer requests changes, with no lease of her own. Role policy holds.\n   \u2298 refused: 'request_changes' is restricted to roles ['reviewer']; the caller presented role='worker'. Pass one as the role= argument, e.g. transition(..., role='reviewer'). The kernel checks the role you present against the workflow; it does not verify you hold it.\n   \u2713 request_changes -> changes_requested (no claim needed)\n\n5. The worker dies mid-attempt. Its lease expires and another worker takes over.\n   \u2713 worker-1 took another attempt 2 (state=in_progress), then it died\n   \u2298 refused: transition refused: the lease on 844606cb-722f-4d87-a424-686d5d70899c (attempt 2, held by 'worker-1') expired at 2026-10-05T07:37:47.479274+00:00. Expiry is terminal -- it cannot be renewed or written through. Call expire_leases(844606cb-722f-4d87-a424-686d5d70899c) to sweep just this one, expire_leases() to sweep every dead lease, or claim() to take it over and record the takeover. lease() shows who held it.\n   \u2713 lease expired and was swept (1 removed)\n   \u2713 worker-3 took over with attempt 3\n\n6. The dead worker wakes up and tries to commit. This is the fencing test.\n   \u2298 refused: transition refused: attempt 2 is stale. The current lease on 844606cb-722f-4d87-a424-686d5d70899c is attempt 3, held by 'worker-3' until 2026-10-05T07:42:47.699241+00:00. Someone else took over.\n   \u2713 the stale attempt could not commit to this store\n   (note: a lease cannot stop that process making EXTERNAL requests \u2014\n    pass the attempt to the target system too if the effect must be fenced)\n\n7. The new worker finishes and a fresh review accepts it.\n   \u2713 accept -> done\n   \u2298 refused: 'done' is terminal; no transition may follow\n\n8. Discovery queries, over the caller's own workflow.\n   \u2713 list_items():         2 item(s) \u2014 EVERYTHING, including the one now under a live lease\n   \u2713 available():          1 item(s) \u2014 the leased one is filtered out, which is what 'available' means\n   \u2713 lease(followup):      held by worker-4, attempt 1, live=True \u2014 asked without knowing who held it\n   \u2713 lease(finding):       None \u2014 no lease row at all\n   \u2713 available(open):      1 item(s)\n   \u2713 owned(worker-3):      0 item(s)\n   \u2713 in_states(in_review): 0 item(s)\n   \u2713 in_states(done):      1 item(s)\n   \u2713 by custom field:      2 item(s) with host=web-01, 0 with host=nope\n   \u2713 links_from(finding):  [(UUID('664da436-c22d-4c51-8d52-3816926862c9'), 'blocks')]\n   \u2713 blocked (after done): [] \u2014 the source reached a state the CALLER nominated as satisfaction\n   (a snapshot, not a promise: nothing gates a claim on the follow-up, and\n    the finding could be reopened before anyone picks it up)\n   \u2713 paged 1 at a time:    844606cb-722f-4d87-a424-686d5d70899c then 664da436-c22d-4c51-8d52-3816926862c9\n\n9. Replay rebuilds state from events alone.\n   \u2713 replayed state: done\n   \u2713 replayed fields: ['cve', 'host', 'remediation_note', 'severity']\n   \u2713 no drift between replay and projection; chain intact\n\n10. The history a person actually reads.\n    0. 07:37:45  created          by scanner    (agent)\n    1. 07:37:45  start            by worker-1   (agent)\n    2. 07:37:45  submit           by worker-1   (agent)\n    3. 07:37:45  request_changes  by alice      (human)\n    4. 07:37:45  start            by worker-1   (agent)\n    5. 07:37:47  submit           by worker-3   (agent)\n    6. 07:37:47  accept           by alice      (human)\n\nScenario passed.\n   \u2713 $ regista workflow validate --file /tmp/regista-f3-after-last-edit/wheel/examples/ingest.workflow.yaml\n   \u2713 $ regista workflow register --file /tmp/regista-f3-after-last-edit/wheel/examples/ingest.workflow.yaml\n   \u2713 same kernel, same schema \u2014 only a different workflow document\n\n1. An ingestion script files a document with a source reference and a follow-up.\n   \u2713 document 6da90341-191d-4423-9fb9-e914168d98b3 (received)\n   \u2713 linked -> 326adc9c-8f76-4c82-8f58-81fbdfbf8eb0 as 'follows'\n   \u2713 available=2 owned(ocr-worker)=0 rejected=0 waiting=1 review_ready=0 all=4\n\n2. A processing worker claims it and records extracted fields.\n   \u2713 extract -> extracting (attempt 1)\n   \u2713 available=1 owned(ocr-worker)=1 rejected=0 waiting=1 review_ready=0 all=4\n   \u2298 refused: 'propose' requires field(s) ['invoice_date']: ['invoice_date'] are not set on the item. Supply them with this transition using the fields= argument: transition(..., fields={'invoice_date': ...})\n   \u2713 propose -> needs_review\n   \u2713 worker released the lease so a person can act without a takeover\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=1 review_ready=1 all=4\n\n3. A person reviews it through the CLI, holding a lease across commands.\n   \u2713 $ regista list\n   \u2713 $ regista list --state needs_review\n   \u2713 $ regista show 6da90341-191d-4423-9fb9-e914168d98b3\n   \u2298 refused: $ regista transition 6da90341-191d-4423-9fb9-e914168d98b3 --transition reject -> refused: 'reject' is restricted to roles ['editor']; the caller presented role='clerk'. Pass one as the role= argument, e.g. transition(..., role='editor'). The kernel checks the role you present against the workflow; it does not verify you hold it.\n   \u2713 $ regista claim 6da90341-191d-4423-9fb9-e914168d98b3 --actor erin\n   \u2713 $ regista heartbeat 6da90341-191d-4423-9fb9-e914168d98b3 --actor erin\n   \u2713 $ regista lease 6da90341-191d-4423-9fb9-e914168d98b3\n   \u2713 erin holds attempt 2 across four separate CLI invocations\n   \u2298 refused: $ regista transition 6da90341-191d-4423-9fb9-e914168d98b3 --transition reject -> refused: transition refused: attempt 2 on 6da90341-191d-4423-9fb9-e914168d98b3 is held by 'erin', not 'dave'. A write must be attributed to the lease holder. (This is ownership, not authentication: actor_id is caller-supplied attribution either way.)\n   \u2713 $ regista transition 6da90341-191d-4423-9fb9-e914168d98b3 --transition reject\n   \u2713 a person rejected it -> rejected\n   \u2713 $ regista release 6da90341-191d-4423-9fb9-e914168d98b3 --actor erin\n   \u2713 available=1 owned(ocr-worker)=0 rejected=1 waiting=1 review_ready=0 all=4\n\n4. Rework. The rejected attempt's residue is cleared ON PURPOSE.\n   \u2713 lease(doc) -> held by ocr-worker, attempt 3, live=True\n   \u2713 rework -> extracting; cleared reject_reason and confidence\n   \u2713 invoice_date survived the reject and the clear: '2026-09-02'\n   \u2298 refused: 'propose' requires field(s) ['invoice_date']: ['invoice_date'] are not set on the item (this call cleared ['invoice_date']). Supply them with this transition using the fields= argument: transition(..., fields={'invoice_date': ...})\n   \u2298 refused: fields and unset_fields both name ['invoice_total']. One call may set a field or clear it, not both -- the result would depend on an ordering rule nobody should have to know. Decide at the call site.\n   \u2713 re-proposed -> needs_review (invoice_date carried forward from the first attempt)\n   \u2713 $ regista transition 6da90341-191d-4423-9fb9-e914168d98b3 --transition correct\n   \u2713 a person approved it -> approved\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=0 review_ready=0 all=4\n\n5. The external effect. This is the boundary Plan 032 insists on naming.\n   \u2713 posted 1420.55 as txn-1\n   \u2713 already posted as txn-1 (the ledger de-duplicated, not regista)\n   \u2713 the retried archive was a no-op \u2014 regista's idempotency key covered ITS write\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=0 review_ready=0 all=4\n   \u2713 the follow-up is no longer waiting: its source reached a state the CALLER nominated as satisfaction\n    that result is a SNAPSHOT. Nothing scheduled the follow-up and nothing\n    gates a claim on it; a new link or a reopened source could block it again.\n    the ledger post was protected by the LEDGER's own key. A regista lease or\n    idempotency key never makes an external effect exactly-once.\n\n6. Terminal state, replay and the history a person reads.\n   \u2298 refused: 'archived' is terminal; no transition may follow\n   \u2713 replayed state: archived\n   \u2713 replayed fields: ['confidence', 'corrected_by', 'invoice_date', 'invoice_total', 'pages', 'payment_ref', 'source_uri']\n   \u2713 the cleared fields stayed cleared through a full replay from events alone\n   \u2713 no drift; chain intact\n   \u2713 $ regista history 6da90341-191d-4423-9fb9-e914168d98b3\n    0. created    ingest-cron (system)\n    1. extract    ocr-worker (agent)\n    2. propose    ocr-worker (agent)\n    3. reject     erin (human)\n    4. rework     ocr-worker (agent)\n    5. propose    ocr-worker (agent)\n    6. correct    erin (human)\n    7. archive    ledger-worker (agent)\n\nScenario passed in 4.1s from an empty database.\n{\"os\": \"Linux-6.17.0-1022-azure-x86_64-with-glibc2.39\", \"python\": \"3.14.8 (main, Oct  3 2026, 01:04:31) [Clang 22.1.3 ]\", \"postgresql\": \"15.19\", \"kernel_schema\": 1, \"psycopg\": \"3.3.6\"}\nrollback: invalid input and injected SQL failure left state/history unchanged\ncontention: 8 independent connections, exactly 1 claim winner; replay clean\ncrash: lease-holding OS process terminated (SIGTERM); real expiry, takeover, stale refusal and valid replacement write passed\nrestart: new process/connection; 6 persisted items, fields/links read; whole-namespace replay clean\nrecover: new process/connection; 6 persisted items, fields/links read; whole-namespace replay clean\nrecover: another valid create/claim/transition/release persisted cleanly\n{\"work_item_id\": \"20fbe881-26bb-4fcc-be0c-8e12beddc589\", \"state\": \"done\", \"fields\": {}, \"drift\": []}\n{\"work_item_id\": \"326adc9c-8f76-4c82-8f58-81fbdfbf8eb0\", \"state\": \"received\", \"fields\": {\"note\": \"file the paper original\", \"source_uri\": \"s3://invoices/2026-09/inv-8841.pdf\"}, \"drift\": []}\n{\"work_item_id\": \"664da436-c22d-4c51-8d52-3816926862c9\", \"state\": \"open\", \"fields\": {\"host\": \"web-01\", \"note\": \"confirm patch after reboot\"}, \"drift\": []}\n{\"work_item_id\": \"6da90341-191d-4423-9fb9-e914168d98b3\", \"state\": \"archived\", \"fields\": {\"pages\": 3, \"source_uri\": \"s3://invoices/2026-09/inv-8841.pdf\", \"invoice_date\": \"2026-09-02\", \"invoice_total\": 1420.55, \"confidence\": 0.93, \"corrected_by\": \"erin\", \"payment_ref\": \"txn-1\"}, \"drift\": []}\n{\"work_item_id\": \"844606cb-722f-4d87-a424-686d5d70899c\", \"state\": \"done\", \"fields\": {\"cve\": \"CVE-2026-1337\", \"host\": \"web-01\", \"severity\": \"high\", \"remediation_note\": \"verified openssl 3.0.14; nginx restarted\"}, \"drift\": []}\n{\"work_item_id\": \"957b6107-9c4f-4e98-8496-f136254844e9\", \"state\": \"done\", \"fields\": {\"recovered\": true}, \"drift\": []}\n{\"work_item_id\": \"c7e0c09e-1776-4bea-aa18-eecb5438d823\", \"state\": \"done\", \"fields\": {}, \"drift\": []}\n0.5-era: migrations 001-044; 2 opens + init refused; complete logical dump unchanged\n0.6-0.7-era: migrations 001-050; 2 opens + init refused; complete logical dump unchanged\nPASS regista_hraedon-0.8.0-py3-none-any.whl sha256=a5881f537b5495f6bb78a5e079122c57e7cc4d3965d1dfa42dcd8c8badb555b4\nusage: regista [-h] [--dsn DSN] [--schema SCHEMA] [--json]\n               {init,health,expire-leases,workflow,create,show,list,claim,heartbeat,lease,release,transition,link,unlink,history,check-history} ...\n\nSmall administration and participation CLI over the kernel.\n\npositional arguments:\n  {init,health,expire-leases,workflow,create,show,list,claim,heartbeat,lease,release,transition,link,unlink,history,check-history}\n    init                create the kernel schema in an empty destination\n    health              schema version and basic counts\n    expire-leases       sweep expired leases (never live ones)\n    workflow            workflow registry\n    create              create a work item\n    show                show one work item\n    list                find work; with no filter this lists EVERYTHING,\n                        leased items included\n    claim               acquire a lease\n    heartbeat           extend a live lease you hold\n    lease               who holds this item's lease, if anyone\n    release             release a lease\n    transition          make a validated transition\n    link                create a typed link\n    unlink              remove a typed link\n    history             ordered event history (one page)\n    check-history       check history read-only; exits 1 on drift\n\noptions:\n  -h, --help            show this help message and exit\n  --dsn DSN             PostgreSQL DSN (or set REGISTA_DSN)\n  --schema SCHEMA       schema to use (default: public)\n  --json                machine-readable output\n/tmp/regista-f3-after-last-edit/sdist/venv/lib/python3.14/site-packages/regista/__init__.py\n   \u2713 connected and initialised \u2014 no keys, no trust log, no genesis ceremony\n\n1. A discovery script files remediation work with domain fields and a link.\n   \u2713 filed 619a66aa-0f2e-4232-8c21-ad12ce856360 (state=open, cve=CVE-2026-1337)\n   \u2713 linked -> 3b291335-8c2a-4f8e-9c88-4817965c6d7a as 'blocks'\n   \u2713 blocked by an unfinished 'blocks' source: ['3b291335-8c2a-4f8e-9c88-4817965c6d7a']\n\n2. Two independently running worker processes contend. Only one may own it.\n   \u2713 worker-1: holds attempt 1\n   \u2298 refused: worker-2: work item 619a66aa-0f2e-4232-8c21-ad12ce856360 is held by 'worker-1' until 2026-10-05T07:43:02.427452+00:00\n   \u2713 exactly one owner: worker-1, attempt 1\n\n3. The owner works. A lease means the HOLDER writes \u2014 nobody else.\n   \u2713 start -> in_progress\n   \u2298 refused: submit without the required field: 'submit' requires field(s) ['remediation_note']: ['remediation_note'] are not set on the item. Supply them with this transition using the fields= argument: transition(..., fields={'remediation_note': ...})\n   \u2298 refused: transition refused: attempt 1 on 619a66aa-0f2e-4232-8c21-ad12ce856360 is held by 'worker-1', not 'worker-9'. A write must be attributed to the lease holder. (This is ownership, not authentication: actor_id is caller-supplied attribution either way.)\n   \u2713 submit -> in_review (note recorded)\n   \u2713 the owner released the lease \u2014 handing off means giving up ownership\n\n4. The reviewer requests changes, with no lease of her own. Role policy holds.\n   \u2298 refused: 'request_changes' is restricted to roles ['reviewer']; the caller presented role='worker'. Pass one as the role= argument, e.g. transition(..., role='reviewer'). The kernel checks the role you present against the workflow; it does not verify you hold it.\n   \u2713 request_changes -> changes_requested (no claim needed)\n\n5. The worker dies mid-attempt. Its lease expires and another worker takes over.\n   \u2713 worker-1 took another attempt 2 (state=in_progress), then it died\n   \u2298 refused: transition refused: the lease on 619a66aa-0f2e-4232-8c21-ad12ce856360 (attempt 2, held by 'worker-1') expired at 2026-10-05T07:38:04.469506+00:00. Expiry is terminal -- it cannot be renewed or written through. Call expire_leases(619a66aa-0f2e-4232-8c21-ad12ce856360) to sweep just this one, expire_leases() to sweep every dead lease, or claim() to take it over and record the takeover. lease() shows who held it.\n   \u2713 lease expired and was swept (1 removed)\n   \u2713 worker-3 took over with attempt 3\n\n6. The dead worker wakes up and tries to commit. This is the fencing test.\n   \u2298 refused: transition refused: attempt 2 is stale. The current lease on 619a66aa-0f2e-4232-8c21-ad12ce856360 is attempt 3, held by 'worker-3' until 2026-10-05T07:43:04.689118+00:00. Someone else took over.\n   \u2713 the stale attempt could not commit to this store\n   (note: a lease cannot stop that process making EXTERNAL requests \u2014\n    pass the attempt to the target system too if the effect must be fenced)\n\n7. The new worker finishes and a fresh review accepts it.\n   \u2713 accept -> done\n   \u2298 refused: 'done' is terminal; no transition may follow\n\n8. Discovery queries, over the caller's own workflow.\n   \u2713 list_items():         2 item(s) \u2014 EVERYTHING, including the one now under a live lease\n   \u2713 available():          1 item(s) \u2014 the leased one is filtered out, which is what 'available' means\n   \u2713 lease(followup):      held by worker-4, attempt 1, live=True \u2014 asked without knowing who held it\n   \u2713 lease(finding):       None \u2014 no lease row at all\n   \u2713 available(open):      1 item(s)\n   \u2713 owned(worker-3):      0 item(s)\n   \u2713 in_states(in_review): 0 item(s)\n   \u2713 in_states(done):      1 item(s)\n   \u2713 by custom field:      2 item(s) with host=web-01, 0 with host=nope\n   \u2713 links_from(finding):  [(UUID('3b291335-8c2a-4f8e-9c88-4817965c6d7a'), 'blocks')]\n   \u2713 blocked (after done): [] \u2014 the source reached a state the CALLER nominated as satisfaction\n   (a snapshot, not a promise: nothing gates a claim on the follow-up, and\n    the finding could be reopened before anyone picks it up)\n   \u2713 paged 1 at a time:    619a66aa-0f2e-4232-8c21-ad12ce856360 then 3b291335-8c2a-4f8e-9c88-4817965c6d7a\n\n9. Replay rebuilds state from events alone.\n   \u2713 replayed state: done\n   \u2713 replayed fields: ['cve', 'host', 'remediation_note', 'severity']\n   \u2713 no drift between replay and projection; chain intact\n\n10. The history a person actually reads.\n    0. 07:38:02  created          by scanner    (agent)\n    1. 07:38:02  start            by worker-1   (agent)\n    2. 07:38:02  submit           by worker-1   (agent)\n    3. 07:38:02  request_changes  by alice      (human)\n    4. 07:38:02  start            by worker-1   (agent)\n    5. 07:38:04  submit           by worker-3   (agent)\n    6. 07:38:04  accept           by alice      (human)\n\nScenario passed.\n   \u2713 $ regista workflow validate --file /tmp/regista-f3-after-last-edit/sdist/examples/ingest.workflow.yaml\n   \u2713 $ regista workflow register --file /tmp/regista-f3-after-last-edit/sdist/examples/ingest.workflow.yaml\n   \u2713 same kernel, same schema \u2014 only a different workflow document\n\n1. An ingestion script files a document with a source reference and a follow-up.\n   \u2713 document 74d77f17-9ebd-4c6d-94ec-b119803011d3 (received)\n   \u2713 linked -> f9229ae0-b616-46a2-a033-bc8d49ddcc28 as 'follows'\n   \u2713 available=2 owned(ocr-worker)=0 rejected=0 waiting=1 review_ready=0 all=4\n\n2. A processing worker claims it and records extracted fields.\n   \u2713 extract -> extracting (attempt 1)\n   \u2713 available=1 owned(ocr-worker)=1 rejected=0 waiting=1 review_ready=0 all=4\n   \u2298 refused: 'propose' requires field(s) ['invoice_date']: ['invoice_date'] are not set on the item. Supply them with this transition using the fields= argument: transition(..., fields={'invoice_date': ...})\n   \u2713 propose -> needs_review\n   \u2713 worker released the lease so a person can act without a takeover\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=1 review_ready=1 all=4\n\n3. A person reviews it through the CLI, holding a lease across commands.\n   \u2713 $ regista list\n   \u2713 $ regista list --state needs_review\n   \u2713 $ regista show 74d77f17-9ebd-4c6d-94ec-b119803011d3\n   \u2298 refused: $ regista transition 74d77f17-9ebd-4c6d-94ec-b119803011d3 --transition reject -> refused: 'reject' is restricted to roles ['editor']; the caller presented role='clerk'. Pass one as the role= argument, e.g. transition(..., role='editor'). The kernel checks the role you present against the workflow; it does not verify you hold it.\n   \u2713 $ regista claim 74d77f17-9ebd-4c6d-94ec-b119803011d3 --actor erin\n   \u2713 $ regista heartbeat 74d77f17-9ebd-4c6d-94ec-b119803011d3 --actor erin\n   \u2713 $ regista lease 74d77f17-9ebd-4c6d-94ec-b119803011d3\n   \u2713 erin holds attempt 2 across four separate CLI invocations\n   \u2298 refused: $ regista transition 74d77f17-9ebd-4c6d-94ec-b119803011d3 --transition reject -> refused: transition refused: attempt 2 on 74d77f17-9ebd-4c6d-94ec-b119803011d3 is held by 'erin', not 'dave'. A write must be attributed to the lease holder. (This is ownership, not authentication: actor_id is caller-supplied attribution either way.)\n   \u2713 $ regista transition 74d77f17-9ebd-4c6d-94ec-b119803011d3 --transition reject\n   \u2713 a person rejected it -> rejected\n   \u2713 $ regista release 74d77f17-9ebd-4c6d-94ec-b119803011d3 --actor erin\n   \u2713 available=1 owned(ocr-worker)=0 rejected=1 waiting=1 review_ready=0 all=4\n\n4. Rework. The rejected attempt's residue is cleared ON PURPOSE.\n   \u2713 lease(doc) -> held by ocr-worker, attempt 3, live=True\n   \u2713 rework -> extracting; cleared reject_reason and confidence\n   \u2713 invoice_date survived the reject and the clear: '2026-09-02'\n   \u2298 refused: 'propose' requires field(s) ['invoice_date']: ['invoice_date'] are not set on the item (this call cleared ['invoice_date']). Supply them with this transition using the fields= argument: transition(..., fields={'invoice_date': ...})\n   \u2298 refused: fields and unset_fields both name ['invoice_total']. One call may set a field or clear it, not both -- the result would depend on an ordering rule nobody should have to know. Decide at the call site.\n   \u2713 re-proposed -> needs_review (invoice_date carried forward from the first attempt)\n   \u2713 $ regista transition 74d77f17-9ebd-4c6d-94ec-b119803011d3 --transition correct\n   \u2713 a person approved it -> approved\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=0 review_ready=0 all=4\n\n5. The external effect. This is the boundary Plan 032 insists on naming.\n   \u2713 posted 1420.55 as txn-1\n   \u2713 already posted as txn-1 (the ledger de-duplicated, not regista)\n   \u2713 the retried archive was a no-op \u2014 regista's idempotency key covered ITS write\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=0 review_ready=0 all=4\n   \u2713 the follow-up is no longer waiting: its source reached a state the CALLER nominated as satisfaction\n    that result is a SNAPSHOT. Nothing scheduled the follow-up and nothing\n    gates a claim on it; a new link or a reopened source could block it again.\n    the ledger post was protected by the LEDGER's own key. A regista lease or\n    idempotency key never makes an external effect exactly-once.\n\n6. Terminal state, replay and the history a person reads.\n   \u2298 refused: 'archived' is terminal; no transition may follow\n   \u2713 replayed state: archived\n   \u2713 replayed fields: ['confidence', 'corrected_by', 'invoice_date', 'invoice_total', 'pages', 'payment_ref', 'source_uri']\n   \u2713 the cleared fields stayed cleared through a full replay from events alone\n   \u2713 no drift; chain intact\n   \u2713 $ regista history 74d77f17-9ebd-4c6d-94ec-b119803011d3\n    0. created    ingest-cron (system)\n    1. extract    ocr-worker (agent)\n    2. propose    ocr-worker (agent)\n    3. reject     erin (human)\n    4. rework     ocr-worker (agent)\n    5. propose    ocr-worker (agent)\n    6. correct    erin (human)\n    7. archive    ledger-worker (agent)\n\nScenario passed in 4.1s from an empty database.\n{\"os\": \"Linux-6.17.0-1022-azure-x86_64-with-glibc2.39\", \"python\": \"3.14.8 (main, Oct  3 2026, 01:04:31) [Clang 22.1.3 ]\", \"postgresql\": \"15.19\", \"kernel_schema\": 1, \"psycopg\": \"3.3.6\"}\nrollback: invalid input and injected SQL failure left state/history unchanged\ncontention: 8 independent connections, exactly 1 claim winner; replay clean\ncrash: lease-holding OS process terminated (SIGTERM); real expiry, takeover, stale refusal and valid replacement write passed\nrestart: new process/connection; 6 persisted items, fields/links read; whole-namespace replay clean\nrecover: new process/connection; 6 persisted items, fields/links read; whole-namespace replay clean\nrecover: another valid create/claim/transition/release persisted cleanly\n{\"work_item_id\": \"2e7d04f6-4588-4b51-9d56-578accf6071d\", \"state\": \"done\", \"fields\": {}, \"drift\": []}\n{\"work_item_id\": \"3b291335-8c2a-4f8e-9c88-4817965c6d7a\", \"state\": \"open\", \"fields\": {\"host\": \"web-01\", \"note\": \"confirm patch after reboot\"}, \"drift\": []}\n{\"work_item_id\": \"619a66aa-0f2e-4232-8c21-ad12ce856360\", \"state\": \"done\", \"fields\": {\"cve\": \"CVE-2026-1337\", \"host\": \"web-01\", \"severity\": \"high\", \"remediation_note\": \"verified openssl 3.0.14; nginx restarted\"}, \"drift\": []}\n{\"work_item_id\": \"74d77f17-9ebd-4c6d-94ec-b119803011d3\", \"state\": \"archived\", \"fields\": {\"pages\": 3, \"source_uri\": \"s3://invoices/2026-09/inv-8841.pdf\", \"invoice_date\": \"2026-09-02\", \"invoice_total\": 1420.55, \"confidence\": 0.93, \"corrected_by\": \"erin\", \"payment_ref\": \"txn-1\"}, \"drift\": []}\n{\"work_item_id\": \"8b0fb152-f20c-4a73-aeda-c94f97d53f6a\", \"state\": \"done\", \"fields\": {}, \"drift\": []}\n{\"work_item_id\": \"f8bcd61d-73be-407c-ac18-8e9890f6ec07\", \"state\": \"done\", \"fields\": {\"recovered\": true}, \"drift\": []}\n{\"work_item_id\": \"f9229ae0-b616-46a2-a033-bc8d49ddcc28\", \"state\": \"received\", \"fields\": {\"note\": \"file the paper original\", \"source_uri\": \"s3://invoices/2026-09/inv-8841.pdf\"}, \"drift\": []}\n0.5-era: migrations 001-044; 2 opens + init refused; complete logical dump unchanged\n0.6-0.7-era: migrations 001-050; 2 opens + init refused; complete logical dump unchanged\nPASS regista_hraedon-0.8.0.tar.gz sha256=f7c2a8066f993f09d3ef149f710536d318bd1074d4812e7aefe5625f1b6812b8\n",
+      "stderr": "Using CPython 3.14.8 interpreter at: /projects/.worktrees/regista-f1b/.venv/bin/python\nCreating virtual environment at: venv\nUsing Python 3.14.8 environment at: venv\nResolved 11 packages in 208ms\nDownloading psycopg-binary (5.0MiB)\n Downloaded psycopg-binary\nPrepared 11 packages in 100ms\nInstalled 11 packages in 2ms\n + attrs==26.1.0\n + jsonschema==4.26.0\n + jsonschema-specifications==2025.9.1\n + psycopg==3.3.6\n + psycopg-binary==3.3.6\n + psycopg-pool==3.3.3\n + pyyaml==6.0.3\n + referencing==0.37.0\n + regista-hraedon==0.8.0 (from file:///projects/.worktrees/regista-f1b/dist/regista_hraedon-0.8.0-py3-none-any.whl)\n + rpds-py==2026.9.1\n + typing-extensions==4.16.0\nUsing CPython 3.14.8 interpreter at: /projects/.worktrees/regista-f1b/.venv/bin/python\nCreating virtual environment at: venv\nUsing Python 3.14.8 environment at: venv\nResolved 11 packages in 244ms\n   Building regista-hraedon @ file:///projects/.worktrees/regista-f1b/dist/regista_hraedon-0.8.0.tar.gz\nDownloading psycopg-binary (5.0MiB)\n Downloaded psycopg-binary\n      Built regista-hraedon @ file:///projects/.worktrees/regista-f1b/dist/regista_hraedon-0.8.0.tar.gz\nPrepared 11 packages in 389ms\nInstalled 11 packages in 4ms\n + attrs==26.1.0\n + jsonschema==4.26.0\n + jsonschema-specifications==2025.9.1\n + psycopg==3.3.6\n + psycopg-binary==3.3.6\n + psycopg-pool==3.3.3\n + pyyaml==6.0.3\n + referencing==0.37.0\n + regista-hraedon==0.8.0 (from file:///projects/.worktrees/regista-f1b/dist/regista_hraedon-0.8.0.tar.gz)\n + rpds-py==2026.9.1\n + typing-extensions==4.16.0\n"
+    },
+    {
+      "gate": "clean-venv smoke",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "scripts/smoke_installed.py",
+        "dist"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 6.38,
+      "stdout": "usage: regista [-h] [--dsn DSN] [--schema SCHEMA] [--json]\n               {init,health,expire-leases,workflow,create,show,list,claim,heartbeat,lease,release,transition,link,unlink,history,check-history} ...\n\nSmall administration and participation CLI over the kernel.\n\npositional arguments:\n  {init,health,expire-leases,workflow,create,show,list,claim,heartbeat,lease,release,transition,link,unlink,history,check-history}\n    init                create the kernel schema in an empty destination\n    health              schema version and basic counts\n    expire-leases       sweep expired leases (never live ones)\n    workflow            workflow registry\n    create              create a work item\n    show                show one work item\n    list                find work; with no filter this lists EVERYTHING,\n                        leased items included\n    claim               acquire a lease\n    heartbeat           extend a live lease you hold\n    lease               who holds this item's lease, if anyone\n    release             release a lease\n    transition          make a validated transition\n    link                create a typed link\n    unlink              remove a typed link\n    history             ordered event history (one page)\n    check-history       check history read-only; exits 1 on drift\n\noptions:\n  -h, --help            show this help message and exit\n  --dsn DSN             PostgreSQL DSN (or set REGISTA_DSN)\n  --schema SCHEMA       schema to use (default: public)\n  --json                machine-readable output\ninstalled: /tmp/regista-installed-_4bxrqlw/venv/lib/python3.14/site-packages/regista/__init__.py\n   \u2713 $ regista workflow validate --file /tmp/regista-installed-_4bxrqlw/examples/ingest.workflow.yaml\n   \u2713 $ regista workflow register --file /tmp/regista-installed-_4bxrqlw/examples/ingest.workflow.yaml\n   \u2713 same kernel, same schema \u2014 only a different workflow document\n\n1. An ingestion script files a document with a source reference and a follow-up.\n   \u2713 document 99c89283-d2ec-448f-8239-7ba96ad26bf7 (received)\n   \u2713 linked -> 403565dd-b511-4d6e-bf93-a994d53b57f2 as 'follows'\n   \u2713 available=2 owned(ocr-worker)=0 rejected=0 waiting=1 review_ready=0 all=2\n\n2. A processing worker claims it and records extracted fields.\n   \u2713 extract -> extracting (attempt 1)\n   \u2713 available=1 owned(ocr-worker)=1 rejected=0 waiting=1 review_ready=0 all=2\n   \u2298 refused: 'propose' requires field(s) ['invoice_date']: ['invoice_date'] are not set on the item. Supply them with this transition using the fields= argument: transition(..., fields={'invoice_date': ...})\n   \u2713 propose -> needs_review\n   \u2713 worker released the lease so a person can act without a takeover\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=1 review_ready=1 all=2\n\n3. A person reviews it through the CLI, holding a lease across commands.\n   \u2713 $ regista list\n   \u2713 $ regista list --state needs_review\n   \u2713 $ regista show 99c89283-d2ec-448f-8239-7ba96ad26bf7\n   \u2298 refused: $ regista transition 99c89283-d2ec-448f-8239-7ba96ad26bf7 --transition reject -> refused: 'reject' is restricted to roles ['editor']; the caller presented role='clerk'. Pass one as the role= argument, e.g. transition(..., role='editor'). The kernel checks the role you present against the workflow; it does not verify you hold it.\n   \u2713 $ regista claim 99c89283-d2ec-448f-8239-7ba96ad26bf7 --actor erin\n   \u2713 $ regista heartbeat 99c89283-d2ec-448f-8239-7ba96ad26bf7 --actor erin\n   \u2713 $ regista lease 99c89283-d2ec-448f-8239-7ba96ad26bf7\n   \u2713 erin holds attempt 2 across four separate CLI invocations\n   \u2298 refused: $ regista transition 99c89283-d2ec-448f-8239-7ba96ad26bf7 --transition reject -> refused: transition refused: attempt 2 on 99c89283-d2ec-448f-8239-7ba96ad26bf7 is held by 'erin', not 'dave'. A write must be attributed to the lease holder. (This is ownership, not authentication: actor_id is caller-supplied attribution either way.)\n   \u2713 $ regista transition 99c89283-d2ec-448f-8239-7ba96ad26bf7 --transition reject\n   \u2713 a person rejected it -> rejected\n   \u2713 $ regista release 99c89283-d2ec-448f-8239-7ba96ad26bf7 --actor erin\n   \u2713 available=1 owned(ocr-worker)=0 rejected=1 waiting=1 review_ready=0 all=2\n\n4. Rework. The rejected attempt's residue is cleared ON PURPOSE.\n   \u2713 lease(doc) -> held by ocr-worker, attempt 3, live=True\n   \u2713 rework -> extracting; cleared reject_reason and confidence\n   \u2713 invoice_date survived the reject and the clear: '2026-09-02'\n   \u2298 refused: 'propose' requires field(s) ['invoice_date']: ['invoice_date'] are not set on the item (this call cleared ['invoice_date']). Supply them with this transition using the fields= argument: transition(..., fields={'invoice_date': ...})\n   \u2298 refused: fields and unset_fields both name ['invoice_total']. One call may set a field or clear it, not both -- the result would depend on an ordering rule nobody should have to know. Decide at the call site.\n   \u2713 re-proposed -> needs_review (invoice_date carried forward from the first attempt)\n   \u2713 $ regista transition 99c89283-d2ec-448f-8239-7ba96ad26bf7 --transition correct\n   \u2713 a person approved it -> approved\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=0 review_ready=0 all=2\n\n5. The external effect. This is the boundary Plan 032 insists on naming.\n   \u2713 posted 1420.55 as txn-1\n   \u2713 already posted as txn-1 (the ledger de-duplicated, not regista)\n   \u2713 the retried archive was a no-op \u2014 regista's idempotency key covered ITS write\n   \u2713 available=1 owned(ocr-worker)=0 rejected=0 waiting=0 review_ready=0 all=2\n   \u2713 the follow-up is no longer waiting: its source reached a state the CALLER nominated as satisfaction\n    that result is a SNAPSHOT. Nothing scheduled the follow-up and nothing\n    gates a claim on it; a new link or a reopened source could block it again.\n    the ledger post was protected by the LEDGER's own key. A regista lease or\n    idempotency key never makes an external effect exactly-once.\n\n6. Terminal state, replay and the history a person reads.\n   \u2298 refused: 'archived' is terminal; no transition may follow\n   \u2713 replayed state: archived\n   \u2713 replayed fields: ['confidence', 'corrected_by', 'invoice_date', 'invoice_total', 'pages', 'payment_ref', 'source_uri']\n   \u2713 the cleared fields stayed cleared through a full replay from events alone\n   \u2713 no drift; chain intact\n   \u2713 $ regista history 99c89283-d2ec-448f-8239-7ba96ad26bf7\n    0. created    ingest-cron (system)\n    1. extract    ocr-worker (agent)\n    2. propose    ocr-worker (agent)\n    3. reject     erin (human)\n    4. rework     ocr-worker (agent)\n    5. propose    ocr-worker (agent)\n    6. correct    erin (human)\n    7. archive    ledger-worker (agent)\n\nScenario passed in 4.4s from an empty database.\nInstalled wheel smoke passed (clean venv, checkout absent from import path).\n",
+      "stderr": "Using CPython 3.14.8 interpreter at: /projects/.worktrees/regista-f1b/.venv/bin/python\nCreating virtual environment at: venv\nUsing Python 3.14.8 environment at: venv\nResolved 11 packages in 227ms\nDownloading psycopg-binary (5.0MiB)\n Downloaded psycopg-binary\nPrepared 11 packages in 143ms\nInstalled 11 packages in 2ms\n + attrs==26.1.0\n + jsonschema==4.26.0\n + jsonschema-specifications==2025.9.1\n + psycopg==3.3.6\n + psycopg-binary==3.3.6\n + psycopg-pool==3.3.3\n + pyyaml==6.0.3\n + referencing==0.37.0\n + regista-hraedon==0.8.0 (from file:///projects/.worktrees/regista-f1b/dist/regista_hraedon-0.8.0-py3-none-any.whl)\n + rpds-py==2026.9.1\n + typing-extensions==4.16.0\n"
+    },
+    {
+      "gate": "verify-baseline",
+      "command": [
+        ".venv/bin/python",
+        "scripts/check_published_migrations.py",
+        "verify-baseline"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.16,
+      "stdout": "verify-baseline: ok\n",
+      "stderr": ""
+    },
+    {
+      "gate": "verify-ledger",
+      "command": [
+        ".venv/bin/python",
+        "scripts/check_published_migrations.py",
+        "verify-ledger"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.26,
+      "stdout": "no published 0.8.x release yet; PyPI binding not applicable\nverify-ledger: ok\n",
+      "stderr": ""
+    },
+    {
+      "gate": "check-dist advisory",
+      "command": [
+        ".venv/bin/python",
+        "scripts/check_published_migrations.py",
+        "check-dist",
+        "dist"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 2.44,
+      "stdout": "ADVISORY (not authoritative; only the CI run is) check-dist: ok\n",
+      "stderr": ""
+    },
+    {
+      "gate": "fresh clone fetch of final evidence tree",
+      "command": [
+        "git",
+        "-C",
+        "/tmp/regista-f3-authoritative",
+        "fetch",
+        "origin",
+        "feat/wi364-f1-promote"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.02,
+      "stdout": "",
+      "stderr": "From /projects/.worktrees/regista-f1b\n * branch            feat/wi364-f1-promote -> FETCH_HEAD\n   73b3f2e..75dcb8a  feat/wi364-f1-promote -> origin/feat/wi364-f1-promote\n"
+    },
+    {
+      "gate": "fresh clone candidate checkout",
+      "command": [
+        "git",
+        "-C",
+        "/tmp/regista-f3-authoritative",
+        "checkout",
+        "--detach",
+        "75dcb8ab8e9057591fd4b4ecbfd664e8a8b196c4"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.01,
+      "stdout": "",
+      "stderr": "Previous HEAD position was 73b3f2e test: allow the measured full-suite duration in the mutation control\nHEAD is now at 75dcb8a docs: record F3 qualification and the owner-only F5 release checklist\n"
+    },
+    {
+      "gate": "workflow-equivalent clone rebuild",
+      "command": [
+        "uv",
+        "build",
+        "--out-dir",
+        "/tmp/regista-f3-authoritative/dist"
+      ],
+      "cwd": "/tmp/regista-f3-authoritative",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.76,
+      "stdout": "",
+      "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/regista_hraedon-0.8.0.tar.gz\nSuccessfully built dist/regista_hraedon-0.8.0-py3-none-any.whl\n"
+    },
+    {
+      "gate": "clone rebuild SHA-256",
+      "command": [
+        "sha256sum",
+        "/tmp/regista-f3-authoritative/dist/regista_hraedon-0.8.0-py3-none-any.whl",
+        "/tmp/regista-f3-authoritative/dist/regista_hraedon-0.8.0.tar.gz"
+      ],
+      "cwd": "/projects/.worktrees/regista-f1b",
+      "disposable_database": "postgresql://regista_test:<disposable-password>@127.0.0.1:55499/regista_test",
+      "exit_code": 0,
+      "duration_seconds": 0.0,
+      "stdout": "a5881f537b5495f6bb78a5e079122c57e7cc4d3965d1dfa42dcd8c8badb555b4  /tmp/regista-f3-authoritative/dist/regista_hraedon-0.8.0-py3-none-any.whl\nf7c2a8066f993f09d3ef149f710536d318bd1074d4812e7aefe5625f1b6812b8  /tmp/regista-f3-authoritative/dist/regista_hraedon-0.8.0.tar.gz\n",
+      "stderr": ""
+    },
+    {
+      "gate": "check-dist authoritative",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-f3-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-f3-authoritative/dist"
+      ],
+      "cwd": "/tmp/regista-f3-authoritative",
+      "disposable_database": "",
+      "exit_code": 0,
+      "duration_seconds": 3.0,
+      "stdout": "check-dist: ok\n",
+      "stderr": ""
+    },
+    {
+      "gate": "full suite 3.11 after pip repair",
+      "command": [
+        "/tmp/regista-py311/bin/python",
+        "-m",
+        "pytest",
+        "tests/",
+        "-q"
+      ],
+      "exit_code": 0,
+      "disposable_database": "f3_final_retry311_61c57124a293",
+      "stdout": "........................................................................ [  7%]\n........................................................................ [ 15%]\n........................................................................ [ 23%]\n........................................................................ [ 31%]\n........................................................................ [ 39%]\n........................................................................ [ 47%]\n........................................................................ [ 54%]\n........................................................................ [ 62%]\n........................................................................ [ 70%]\n........................................................................ [ 78%]\n........................................................................ [ 86%]\n................................................. [ 91%]\n.................................. [ 95%]\n............................................                       [100%]\n919 passed, 67 subtests passed in 340.99s (0:05:40)\n",
+      "stderr": ""
+    }
+  ],
+  "environment_corrections": [
+    {
+      "gate": "full suite 3.11",
+      "cause": "The uv-created 3.11 venv lacked pip; three distribution guard tests invoke python -m pip wheel.",
+      "correction_command": [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "/tmp/regista-py311/bin/python",
+        "pip==26.2.1"
+      ],
+      "result": "Installed pip 26.2.1; full suite retried in a fresh disposable database."
+    },
+    {
+      "gate": "twine",
+      "cause": "The temporary evidence harness used Path.iterdir() and mistakenly passed uv-generated dist/.gitignore to twine.",
+      "correction": "Select the versioned wheel and sdist explicitly. Path.glob also includes dotfiles, so the second harness attempt was refused too. Qualified archive inputs unchanged."
+    }
+  ],
+  "artifact_sha256": {
+    "regista_hraedon-0.8.0-py3-none-any.whl": "a5881f537b5495f6bb78a5e079122c57e7cc4d3965d1dfa42dcd8c8badb555b4",
+    "regista_hraedon-0.8.0.tar.gz": "f7c2a8066f993f09d3ef149f710536d318bd1074d4812e7aefe5625f1b6812b8"
+  },
+  "all_gates_passed": true,
+  "interpretation": "All required final gates passed on the final source/documentation tree. Failed setup/harness attempts are retained, explained under environment_corrections and superseded by successful corrected runs. This generated evidence is not a packaged input."
+}

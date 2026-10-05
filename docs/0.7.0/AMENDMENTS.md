@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # Regista 0.7.0 Contract Amendments
 
 **Status:** Normative for regista 0.7.0. This document amends the frozen 0.6.0

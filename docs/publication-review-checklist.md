@@ -1,3 +1,6 @@
+> **Historical pre-0.8 publication checklist.** Superseded by Plan 032 F5;
+> the old blockers and file references below are not current release guidance.
+
 # Publication-Review Checklist — regista
 
 Before flipping the repository from private to public, verify each item.

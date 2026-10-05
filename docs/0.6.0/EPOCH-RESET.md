@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # Epoch reset — the evidentiary record starts at genesis, not at first run
 
 **Status: owner decision, 2026-08-10; cutover disposition amended 2026-08-22.** This document has precedence over

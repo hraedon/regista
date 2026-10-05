@@ -1,0 +1,134 @@
+[
+  {
+    "mutant": "c4_gzip_encoding",
+    "failures": [
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[gzip-mtime]",
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[gzip-os-byte]",
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[gzip-xfl-byte]",
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[gzip-different-deflate]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "c4_tar_metadata",
+    "failures": [
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[tar-member-mtime]",
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[tar-member-mode-0600]",
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[tar-type]",
+      "tests.test_distribution_vectors::test_c4_sdist_canonical_bytes[tar-linkname]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "c4_guard_upload_order",
+    "failures": [
+      "tests.test_c1_workflows::test_c4_guard_is_immediately_uploaded_and_twine_is_unprivileged"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "c4_twine_dependency",
+    "failures": [
+      "tests.test_c1_workflows::test_c4_guard_is_immediately_uploaded_and_twine_is_unprivileged"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "c4_tool_hashes",
+    "failures": [
+      "tests.test_c1_workflows::test_c4_release_tool_installations_require_hashes_and_fresh_venvs"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "c4_frozen_verification",
+    "failures": [
+      "tests.test_c1_workflows::test_c4_verification_uses_frozen_project_lock"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "c4_summary_hashes",
+    "failures": [
+      "tests.test_c1_workflows::test_c4_approval_summary_contains_exact_hashes"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "gzip_tar_envelope",
+    "failures": [
+      "tests.test_distribution_vectors::test_c1_sdist_envelope_refuses_trailers[gzip]",
+      "tests.test_distribution_vectors::test_c1_sdist_envelope_refuses_trailers[tar-data]",
+      "tests.test_distribution_vectors::test_c1_sdist_envelope_refuses_trailers[tar-zero]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "sdist_metadata_binding",
+    "failures": [
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Summary-altered]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Requires-Python->=99]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Requires-Dist-counterfeit-dependency]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Classifier-Counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Project-URL-Counterfeit, https://example.invalid]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Author-email-counterfeit@example.invalid]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-Counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-File-counterfeit.txt]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-Expression-Counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Provides-Extra-counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Description-Content-Type-text/plain]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Metadata-Version-2.1]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Description-altered readme]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "sdist_root_binding",
+    "failures": [
+      "tests.test_distribution_vectors::test_c1_sdist_root_is_bound"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "ci_permissions",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[ci]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_uv_latest",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[publish]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_uv_checksum",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[publish]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "ci_mutable_action",
+    "failures": [
+      "tests.test_c1_workflows::test_actions_and_uv_are_pinned[ci]"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_identifier_gate",
+    "failures": [
+      "tests.test_c1_workflows::test_publish_requires_identifier_and_merged_commit"
+    ],
+    "exit_code": 1
+  },
+  {
+    "mutant": "publish_main_ancestry",
+    "failures": [
+      "tests.test_c1_workflows::test_publish_requires_identifier_and_merged_commit"
+    ],
+    "exit_code": 1
+  }
+]

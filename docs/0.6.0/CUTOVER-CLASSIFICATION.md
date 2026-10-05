@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista 0.6.0 — legacy / cutover classification policy (FROZEN CONTRACT)
 
 **Status:** Stage 0 contract. Frozen before implementation, per `ARCHITECTURE-0.6.0.md`

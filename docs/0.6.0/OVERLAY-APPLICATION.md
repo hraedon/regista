@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # P0.1 — overlay application record
 
 **Status: COMPLETE, 2026-08-10.** `RECONCILIATION.md` has been applied to the sibling

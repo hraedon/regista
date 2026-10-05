@@ -1,358 +1,133 @@
-# regista
+# Regista
 
-Coordination and durable state for agent pipelines over Postgres.
-
-[![CI](https://github.com/hraedon/regista/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/regista/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT-blue)]()
-
-Regista is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys regista as its own isolated instance using schema-per-project isolation within a single Postgres database.
-
-## Features
-
-- **Event-sourced state** — immutable append-only event log; projection rebuilt by replay
-- **Event hash chain** — each event's `prev_event_hash` binds it to its predecessor (SHA-256 of prev envelope + signature)
-- **Durable claims** — lease-based work claiming with TTL, auto-steal, and attempt tracking
-- **Validated transitions** — workflow-defined state machines with role gating and sync validators
-- **Typed links** — directed relationships between work items with link types declared in workflow YAML
-- **Hook queue** — async event dispatch with dead-letter, retry, and out-of-process claim/complete/fail lifecycle
-- **Custom fields** — typed fields with JSON Schema validation, enum support, and JSONB containment queries
-- **Recurring work items** — interval and RRULE schedules with catch-up policies
-- **Workflow composition** — `extends:` inheritance with keyed list merge and `__append`/`__remove` modifiers
-- **Facade API** — domain-scoped sub-objects (`sub.workflows`, `sub.work_items`, `sub.claims`, etc.)
-- **Maintenance thread** — background sweep, recurrence firing, hook lease cleanup, and witness delivery
-- **Trust hardening** — `strict_roles` enforcement, env-var key injection, vendored RFC 8785
-- **Delegation chain** — `on_behalf_of` field for agent-to-principal binding (Plan 010)
-- **Pluggable signing** — HMAC-SHA256 (default) and Ed25519 via `SigningScheme` protocol (Plan 011)
-- **Witness co-signing** — external witness registration, receipt creation, and HTTP delivery (Plan 013)
-- **Webhooks** — push-model event delivery with auto-pause on failure
-- **Event archival** — `archive_events` moves old events to archive table, preserving hash chain integrity
-- **Batch operations** — `create_work_items_batch` for multi-create in a single transaction
-- **HTTP sidecar** — optional FastAPI pass-through for non-Python consumers with bearer-token auth
-- **Admin CLI** — `regista` command for workflow validation, work-item CRUD, event archival, witness management, and more
-- **Prometheus metrics** — built-in counters for claims, transitions, events, hooks, escalations, witnesses
-- **In-memory backend** — full conformance backend for testing without Postgres
-
-## Quick Start
+Regista gives independently running workers and people durable ownership of work
+and validated handoffs. Your application runs the workers; Regista records who
+owns an attempt, what state the work is in, and how it got there in PostgreSQL.
 
 ```bash
-# Install
-pip install -e .
-
-# With HTTP sidecar support
-pip install -e ".[sidecar]"
-
-# With Ed25519 signing support
-pip install -e ".[ed25519]"
-
-# Install everything
-pip install -e ".[sidecar,ed25519]"
-
-# Start test Postgres
-docker compose -f docker-compose.test.yml up -d
-
-# Run tests
-pytest tests/ -v
-
-# Lint
-ruff check src/ tests/
+pip install regista-hraedon
 ```
 
-## Usage
+0.8.0 requires Python 3.11 or newer. PostgreSQL 15, 16 and 17 are tested.
+Provision a database and a role with database `CREATE` privilege (or a pre-created,
+owned project schema). `initialize()` creates an absent namespace transactionally
+and validates an existing complete baseline before accepting it. Set `REGISTA_DSN` to its connection string; this example uses a fresh
+`tasks` schema. Creating service roles is the operator's job.
 
 ```python
-from regista import Regista
+import os
 
-# Initialize a project (one-time)
-sub = Regista.create_project(
-    dsn="postgresql://user:pass@host:5432/mydb",
-    project="factory",
-    hmac_key_path="/secrets/regista-keys.json",
-)
+from regista import Kernel, Workflow
 
-# In the 0.6.0 clean epoch, open the project explicitly with an externally
-# prepared v6/Ed25519 genesis envelope. Legacy append APIs are refused until
-# the v6 ordinary-event writer is enabled.
-genesis = sub.write_genesis(genesis_envelope, gate_passed=True)
-assert sub.read_genesis().event_hash == genesis.event_hash
-
-# InMemoryRegista now has that equivalent v6 genesis implementation (WI-287):
-# it opens an epoch with the same code path, so `write_genesis` / `read_genesis`
-# work in memory too. What it does NOT provide is the Postgres-only half —
-# locking, rollback, persistence and concurrency (SUITE-RECONCILIATION.md
-# §2.3(a)) — and reaching for those is refused by name
-# (PARITY_BOUNDARY_POSTGRES_ONLY), never faked. An in-memory pass therefore
-# never satisfies a Postgres-gated acceptance criterion. Its *legacy* append
-# APIs stay refused on both sides of genesis, exactly as Postgres's are.
-
-# The legacy operation examples below document the historical API; legacy
-# writers are refused on the clean baseline before and after genesis.
-# Register a workflow
-sub.register_workflow_file("workflows/spec-pipeline.yaml")
-
-# Create work
-wi, event = sub.create_work_item(
-    workflow_name="spec_pipeline",
-    work_item_type="feature",
-    actor_id="agent-1",
-    actor_metadata={"role": "agent", "model": "gpt-4"},
-    custom_fields={"title": "Add authentication"},
-)
-
-# Claim and transition
-claim = sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
-
-# Query available work
-page = sub.query_work_items(
-    workflow_name="spec_pipeline",
-    claimable_now=True,
-    current_states=["new"],
-)
-
-# Replay for integrity check
-report = sub.replay()
-assert report.replayed_drift == 0
-
-# Schedule recurring work
-rule = sub.register_recurrence_rule(
-    workflow_name="spec_pipeline",
-    workflow_version=1,
-    work_item_type="feature",
-    template={"custom_fields": {"title": "Weekly sync"}},
-    schedule_kind="interval",
-    schedule_expr="P7D",
-)
-
-sub.close()
+store = Kernel.connect(os.environ["REGISTA_DSN"], schema=os.getenv("REGISTA_SCHEMA", "tasks"))
+try:
+    store.initialize()  # empty destination, or the 0.8.0 baseline
+    store.register_workflow(Workflow(
+        name="tasks", types=("task",), states=("new", "review", "done"), initial="new",
+        transitions={"submit": (("new",), "review"), "approve": (("review",), "done")},
+        roles={"approve": ("reviewer",)}, role_names=("reviewer",), terminal=("done",),
+    ))
+    item = store.create_work_item(workflow="tasks", type="task", actor_id="worker")
+    lease = store.claim(item.id, actor_id="worker")
+    store.transition(item.id, transition="submit", actor_id="worker", attempt=lease.attempt)
+    store.release(item.id, actor_id="worker", attempt=lease.attempt)  # explicit handoff
+    store.transition(item.id, transition="approve", actor_id="alice", role="reviewer",
+                     actor_kind="human")
+    print(store.get(item.id).state)  # done
+finally:
+    store.close()
 ```
 
-## Workflow Definitions
+This exact example is exercised by `tests/test_documentation.py` and is available
+as [quickstart.py](https://github.com/hraedon/regista/blob/main/examples/quickstart.py).
+Roles here are supplied by the trusted application; `role="reviewer"` does not
+authenticate Alice.
 
-Workflows are YAML files validated against a JSON Schema:
+The two full scenarios run through the public API and installed CLI:
+[worker/reviewer repair and takeover](https://github.com/hraedon/regista/blob/main/examples/example_handoff.py)
+and [document extraction with human correction](https://github.com/hraedon/regista/blob/main/examples/example_documents.py).
+Their workflows and scripts ship as `regista/examples` package resources. See the
+[example commands](https://github.com/hraedon/regista/blob/main/examples/README.md).
 
-```yaml
-name: my_workflow
-version: 1
-regista_version: "0.1.0"
+## The bounded coordination contract
 
-states:
-  - name: new
-    initial: true
-  - name: in_progress
-  - name: review
-  - name: done
-    terminal: true
+Immutable workflow versions define states, allowed transitions, caller-presented
+roles, required fields, and optional field/link vocabularies. Items pin their
+workflow version. Claims provide durable leases and increasing attempt tokens;
+protected transitions require the current holder and attempt. Leases survive
+transitions until explicit release, including terminal transitions. An expired
+lease refuses writes until takeover or an operator sweep (`regista expire-leases`).
+The operator schedules sweeps; Regista has no background scheduler.
 
-transitions:
-  - name: start
-    from: new
-    to: in_progress
-    allowed_roles: [agent]
-    hooks: [notify_reviewer]
-  - name: submit_review
-    from: in_progress
-    to: review
-    allowed_roles: [agent]
-  - name: approve
-    from: review
-    to: done
-    allowed_roles: [reviewer]
+Custom fields merge shallowly. `unset_fields` (CLI `--unset-field`) clears keys
+atomically; JSON null remains a value. Typed links connect items within a project.
+Available, owned, state-based review-ready, and single-hop blocked queries are
+bounded snapshots. Links neither gate claims nor schedule dependent work.
 
-roles:
-  - name: agent
-  - name: reviewer
+Each create/transition appends history and updates current state atomically.
+Idempotency keys deduplicate identical requests to Regista; conflicting reuse
+refuses. A lease cannot stop a process making external requests. Downstream
+systems must provide their own idempotency and enforce fencing when needed.
 
-work_item_types:
-  - name: feature
-    custom_fields:
-      - name: title
-        type: string
-        required: true
-        ui_visible: true
-      - name: priority
-        type: enum
-        enum_values: [low, medium, high]
-      - name: metadata
-        type: json
+Use a task queue when you need to enqueue and execute jobs with worker management.
+Use a durable-execution engine when application code needs persisted execution,
+resumption, timers, or orchestration. Regista is useful when execution already
+exists and the shared problem is ownership and handoff. Demand for this narrower
+product has not been demonstrated, and no claim of uniqueness is made.
 
-link_types:
-  - name: depends_on
-    source_type: feature
-    target_type: feature
+## Trust and recovery
 
-hook_defaults:
-  max_retries: 3
+The host application and database administrators are trusted. Actor names and
+kinds are attribution; role checks enforce caller-presented application policy.
+There is no identity authentication, signing, or hostile-administrator protection.
+Unkeyed hashes check consistency and provide no authenticity evidence: a database
+writer can alter records and recompute them.
 
-attempt_threshold: 3
-```
+`regista check-history` checks history read-only (the old `replay` command is
+removed). Replay covers state, fields and clears, sequence density, payload hashes,
+chain links, final sequence, and transition names against the pinned workflow.
+`REPLAY_DOES_NOT_COVER` explicitly excludes leases, attempt counters, typed links,
+and idempotency keys. A clean report proves neither those tables nor external
+effects, identity, freshness, or an independently authenticated history.
 
-### Workflow Composition
+Back up the whole database with PostgreSQL tools. Restore into a separate database,
+check the whole namespace while quiescent, and test another valid write before
+using it. See [operations and preservation](https://github.com/hraedon/regista/blob/main/docs/operations.md).
 
-Workflows can extend other workflows using `extends:`:
+## Breaking 0.8.0 scope reduction
 
-```yaml
-name: extended_pipeline
-extends: base_pipeline.yaml
-transitions:
-  - name: escalate
-    from: review
-    to: escalated
-    __append: true
-```
+**A fresh database is required. There is no in-place upgrade from 0.7.2 or earlier,
+no converter, and no automatic reset.** Keep the old dump, matching package and
+dependency environment, and all old keys/trust material. Verify a scratch restore
+with that environment before changing anything. Old readers keep their known
+limitations; preservation does not certify their historical evidence claims.
 
-## Key Format
+0.8.0 removes the old `Regista`/in-memory/async facades, signing and trust governance,
+bundles and witness/anchoring formats, principal custody, field encryption, suite
+configuration, canonical agent review policy, HTTP sidecar and its extras,
+recurrence, hooks/webhooks, synchronous validators, and workflow composition.
+Callers validate before transitions; kernel role, field and required-field checks
+remain. Project deletion is a manual operator `DROP SCHEMA`; role provisioning
+is also manual. See the [complete breaking-change list](https://github.com/hraedon/regista/blob/main/docs/breaking-0.8.md).
 
-```json
-{
-  "keys": [
-    {
-      "key_id": "key-001",
-      "secret": "base64-encoded-secret",
-      "status": "active",
-      "scheme": "hmac-sha256"
-    },
-    {
-      "key_id": "key-002",
-      "secret": "base64-encoded-ed25519-seed",
-      "public_key": "base64-encoded-ed25519-public-key",
-      "status": "active",
-      "scheme": "ed25519",
-      "encoding": "base64"
-    }
-  ]
-}
-```
+Inputs are bounded: fields and transition payloads are each at most 64 KiB of
+UTF-8 JSON, workflows 256 KiB, nested JSON depth 32, names 255 UTF-8 bytes, and
+schema names 63 bytes. Queries default to 50 rows and cap at 500; field filters
+allow eight scalar equality predicates. See the
+[API](https://github.com/hraedon/regista/blob/main/docs/api.md),
+[CLI](https://github.com/hraedon/regista/blob/main/docs/cli.md), and
+[current specification](https://github.com/hraedon/regista/blob/main/spec.md).
 
-Key statuses: `active`, `deprecated` (accepted with warning), `revoked` (rejected).
-Signing schemes: `hmac-sha256` (default), `ed25519` (requires `pip install regista[ed25519]`).
+## Maintenance and reporting
 
-## HTTP Sidecar
+The maintainer provides a **90-day stabilization window from publication** for
+release regressions and serious security or data-loss reports. The publication
+date and resulting end date will be recorded in the release notes when 0.8.0 is
+published; the window has not started for this candidate. There are no promised
+new features and no SLA.
 
-The optional sidecar exposes the full Regista API over HTTP for non-Python consumers:
-
-```bash
-pip install ".[sidecar]"
-
-export REGISTA_DSN="postgresql://user:pass@host:5432/mydb"
-export REGISTA_PROJECT="factory"
-export REGISTA_HMAC_KEY_PATH="/secrets/keys.json"
-export REGISTA_TOKENS_PATH="/secrets/tokens.yaml"
-
-python -m regista.sidecar
-```
-
-Token file (`tokens.yaml`):
-
-```yaml
-tokens:
-  - token_sha256: "<sha256-hex-of-raw-token>"
-    actor_id: "agent-1"
-    actor_kind: "agent"
-    allowed_roles: ["agent", "reviewer"]
-```
-
-All endpoints are under `/v1/`. Requests must not include `signature` or `payload_canonical_hash` (the sidecar signs internally). OpenAPI docs available at `/docs`.
-
-A Dockerfile is provided in `deploy/sidecar/`.
-
-## Admin CLI
-
-```bash
-# Validate a workflow YAML (no database required)
-regista workflow validate my-workflow.yaml
-
-# Compose workflow with extends:
-regista workflow compose my-workflow.yaml --json
-
-# Inspect work items
-regista work-item show <uuid>
-regista work-item list --workflow my_workflow --claimable-now
-
-# Create and transition work items
-regista work-item create --workflow my_workflow --type feature --actor agent-1 --confirm
-regista work-item transition <uuid> --transition start --actor agent-1 --confirm
-
-# View events
-regista events show <uuid>
-regista events tail --actor agent-1 --since "2026-05-01T00:00:00Z"
-regista events archive --before "2026-01-01T00:00:00Z" --dry-run
-
-# Replay drift check
-regista replay
-
-# Manage recurrence rules
-regista recurrence list
-regista recurrence due
-regista recurrence fire <rule-uuid>
-
-# Schema management
-regista schema init
-regista schema status
-
-# Dead-lettered hooks
-regista hooks dead-letter list
-regista hooks dead-letter requeue <id>
-
-# Actor roles
-regista actor-roles list --actor agent-1
-
-# Witnesses
-regista witness list
-regista witness deliver
-regista witness receipts --event-id <uuid>
-
-# Webhooks
-regista webhook register --url https://example.com/hook --transitions start,complete
-regista webhook list
-```
-
-## Architecture
-
-- **Event-sourced**: events are the authoritative log; `work_items_current` is a transactionally-consistent projection
-- **Hash-chained events**: each event's `prev_event_hash` creates a tamper-evident chain within each work-item
-- **Schema-per-project**: one Postgres database, one schema per project, engine-enforced isolation
-- **Library mode**: runs in-process, no HTTP server required; optional `start_maintenance()` background thread for sweep, recurrence, and witness delivery
-- **Pluggable signing**: HMAC-SHA256 (default) or Ed25519 via `SigningScheme` protocol; library is sole signer
-- **Flat events table**: global `UNIQUE(event_id)` index; partitioning removed in RFC-001
-- **Single-source-of-truth contract**: shared validation/decision functions in `_contract.py` used by both Postgres and in-memory backends
-- **Property-based testing**: hypothesis-driven conformance tests verify both backends behave identically
-
-## Testing
-
-```bash
-# Start Postgres
-docker compose -f docker-compose.test.yml up -d
-
-# Run core tests
-pytest tests/ -v
-
-# Run including property-based tests (slow)
-pytest tests/ -v -m slow
-
-# Run sidecar tests
-pytest tests/sidecar/ -v
-
-# Lint
-ruff check src/ tests/
-
-# Type-check (strict; burndown list in pyproject.toml [tool.mypy])
-mypy
-```
-
-Test DSN: `postgresql://regista_test:regista_test@localhost:5432/regista_test`
-
-## Documentation
-
-- **`spec.md`** — authoritative specification
-- **`spec.yaml`** — machine-readable spec sidecar
-- **`AGENTS.md`** — developer guide, source layout, conventions, and project status
-- **`CHANGELOG.md`** — version history
-- **`deploy/sidecar/README.md`** — sidecar deployment guide
-
-## Status
-
-All features through Plan 022 implemented. FR-01 through FR-29 in tree. See `AGENTS.md` for detailed status.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Report regressions and usage feedback through
+[GitHub issues](https://github.com/hraedon/regista/issues).
+Report sensitive security or data-loss details privately to **plm@hraedon.com**.
+Historical designs under `docs/0.6.0`, `docs/0.7.*`, and `docs/pre-0.8` do not
+define this release's contract.

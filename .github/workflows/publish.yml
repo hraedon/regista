@@ -5,7 +5,8 @@ name: Publish
 # Flow: a tag such as `v0.6.0` triggers a `verify` job (lint + type-check + the
 # Postgres-backed test suite, mirroring ci.yml against the TAGGED tree, plus a
 # tag==package-version guard), then a `build` job (`uv build` → sdist + wheel),
-# then a `publish` job that uploads to PyPI. Each job `needs:` the previous one,
+# plus an unprivileged `twine` job checking the immutable build artifact,
+# then a `publish` job that needs both build and twine and uploads to PyPI.
 # so a tag can never publish code that did not pass the gate.
 #
 # AUTHENTICATION — pick ONE, configured by the repo owner before the first tag:
@@ -41,15 +42,17 @@ name: Publish
 # ref or the event. A pass does not exercise the upload itself.
 #
 # PREREQUISITE before the first dispatch: protect the `pypi` environment
-# (Settings -> Environments -> pypi). Require a reviewer, enable "Prevent
-# self-review", disallow administrator bypass, and restrict deployment refs to
+# (Settings -> Environments -> pypi). Require the owner reviewer, disallow
+# administrator bypass, and restrict deployment refs to
 # branch `main` and tags `v*`. For that to be a real boundary, also protect
 # `main` and guard creation of `v*` tags with a ruleset. Without that, anyone with
 # write access can dispatch a MODIFIED publish.yml from any branch and get a
 # live upload token. The `if:` above cannot stop that, because the modified
 # copy is the one that runs. A writer can already reach the publish job by
 # pushing a v* tag, so this adds no new principal, but it is an easier path.
-# The environment's protection rules are the boundary for both.
+# The environment's protection rules are the boundary for both. The solo owner
+# deliberately permits self-review; approval requires comparing summary hashes
+# with the qualified F5 hashes before clicking Approve.
 
 on:
   push:
@@ -220,28 +223,46 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.14"
+      - name: Candidate is merged into approved main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Identifier gate (fails closed without configured identifiers)
+        env:
+          REGISTA_FORBIDDEN_IDENTIFIERS: ${{ secrets.REGISTA_FORBIDDEN_IDENTIFIERS }}
+        run: |
+          test -n "$REGISTA_FORBIDDEN_IDENTIFIERS"
+          python scripts/check_committed_identifiers.py
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
       - name: Install
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,vendor-check,sidecar,ed25519,encryption,vault]"
+          uv sync --frozen --extra dev
+          uv pip install --python .venv/bin/python --require-hashes -r .github/build-requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Tag matches package version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(python -c 'import importlib.metadata as m; print(m.version("regista-hraedon"))')"
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg"
-      # GitHub issue #65: the ledger must equal what PyPI serves, and the
-      # tagged tree must hold exactly the ledger's migrations. check-dist in the
-      # build job then judges the exact bytes that are uploaded.
-      - name: Published migrations are immutable
+      # GitHub #65: Plan 032 F1/D1 replace the old chain with the pinned fresh
+      # baseline. check-release also refuses any pre-0.8 publication version.
+      # check-dist judges the exact reviewed artifact bytes to be uploaded.
+      - name: Fresh schema baseline is immutable
         run: |
-          python3 scripts/check_published_migrations.py verify-ledger
+          python3 scripts/check_published_migrations.py verify-baseline
           python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
       - name: Lint
-        run: ruff check src/ tests/ tools/
+        run: ruff check src/ tests/ examples/ scripts/
       - name: Type-check
         run: mypy
       - name: Test
+        env:
+          REGISTA_TEST_DSN: postgresql://regista_test:regista_test@localhost:5432/regista_test
+          REGISTA_REQUIRE_DB: "1"
         run: pytest tests/ -q
 
   build:
@@ -256,33 +277,81 @@ jobs:
         with:
           python-version: "3.14"   # check-dist rebuilds each sdist with pip too
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
+      - name: Install hash-locked build tools
+        run: |
+          uv venv .release-build --python 3.14
+          uv pip install --python .release-build/bin/python --require-hashes -r .github/build-requirements.txt
       - name: Build
-        run: uv build
+        run: uv build --python .release-build/bin/python --no-build-isolation
+      - name: Candidate hashes for pypi approval
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          CANDIDATE_TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo '## Qualified artifact comparison required before pypi approval'
+            echo "Commit: $CANDIDATE_SHA"
+            echo "Tag: $CANDIDATE_TAG"
+            echo 'Compare BOTH SHA-256 hashes with plans/032-f5-release-prep.md. Reject any mismatch.'
+            echo '```text'
+            sha256sum dist/*.whl dist/*.tar.gz
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       # #65: judge the exact bytes about to be uploaded against the allowlist,
       # including wheels pip and uv build from the sdist (see the guard's
       # docstring for the build contract that half of the claim rests on).
-      - name: Built artifacts honour the published-migration ledger
+      - name: Built artifacts honour the baseline pin and reviewed tree
         run: |
           home="$(mktemp -d)"
           env -i PATH="$PATH" HOME="$home" \
             GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-            python3 scripts/check_published_migrations.py check-dist --authoritative dist
-      - name: Check distribution metadata
-        run: uvx twine check dist/*
+            .release-build/bin/python scripts/check_published_migrations.py check-dist --authoritative dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist
           path: dist/
 
+  twine:
+    name: Check immutable distribution metadata
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
+      - name: Install hash-locked Twine
+        run: |
+          uv venv .release-twine --python 3.14
+          uv pip install --python .release-twine/bin/python --require-hashes -r .github/twine-requirements.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: dist
+          path: dist/
+      - name: Check distribution metadata
+        run: .release-twine/bin/twine check dist/*
+
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build, twine]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write   # (A) Trusted Publishing OIDC — remove if using (B)
     steps:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist

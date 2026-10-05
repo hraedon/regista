@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # BUNDLE-V3 — frozen contract for the regista 0.6.0 signed audit bundle
 
 Status: **FROZEN for Stage 0**. Contracts only. No production source changed.

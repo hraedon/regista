@@ -1,0 +1,13 @@
+{
+  "format": 4,
+  "project": "regista-hraedon",
+  "source": "Plan 032 F1 and D1: pre-0.8 chain retired; fresh baseline, not yet published",
+  "baseline_version": 1,
+  "baseline": {
+    "schema.sql": "4bc366e7bda15cbe75baf42d522e22d152f1cce9966114e6bd9468e2caf8010d",
+    "workflow.schema.json": "e79d1229368b6b4311a8b24c379a97101b5ea68f6f2d0d0976ff2369d897e3a4"
+  },
+  "schema_versions": {
+    "1": "4bc366e7bda15cbe75baf42d522e22d152f1cce9966114e6bd9468e2caf8010d"
+  }
+}

@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 [agent-wake-opencode] INFO daemon client started, socket=/run/user/1000/agent-wake.sock, sources=["mvmcc03-claude","mvmcc03-opencode"]
 [agent-wake-opencode] INFO subscribed, session_id=01KZJ3A4SZ06873P2A5DMZ6WE8 accepted_sources=["mvmcc03-opencode"]
 [0m

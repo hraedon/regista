@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista 0.6.0 — implementation plan
 
 **Read `ARCHITECTURE-FINAL.md` first** for precedence and binding decisions. This document assigns

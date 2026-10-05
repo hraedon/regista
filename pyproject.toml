@@ -16,18 +16,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "regista-hraedon"
-version = "0.7.2"
-description = "Coordination + state plane for agent pipelines over Postgres"
+version = "0.8.0"
+description = "Durable work ownership and validated handoffs over PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.11"
-# D13 (Plan 032 open-decisions, ruled 2026-09-17): requires-python states the
-# advertised floor only — no speculative upper cap (PyPA guidance: a
-# mismatched Requires-Python can make an installer silently resolve to an
-# OLDER release, which would be an especially bad outcome across a
-# deliberate scope break). classifiers below states which versions are
-# actually exercised in CI (.github/workflows/ci.yml, prototype-kernel job);
-# it is a narrower, testable claim than the >=3.11 floor and must be kept in
-# sync with that job's matrix, not with this dependency floor.
+# Plan 032 D13: CI exercises 3.11–3.14; retain the floor without a speculative cap.
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -40,10 +33,6 @@ dependencies = [
     "psycopg-pool>=3.2,<4",
     "pyyaml>=6.0",
     "jsonschema>=4.21",
-    "structlog>=24.1",
-    "prometheus-client>=0.20",
-    "python-dateutil>=2.9",
-    "pynacl>=1.5",
 ]
 
 [project.optional-dependencies]
@@ -51,102 +40,39 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.16,<0.17",
-    "hypothesis>=6.100",
     "mypy>=2.1,<3",
     "types-PyYAML",
     "types-jsonschema",
-    "types-python-dateutil",
-    # CLI contract v1 conformance kit (Plan 018 WI-2), a normal pinned version
-    # dependency (Plan 019 B1). Previously a git+SHA direct reference installed
-    # by a separate CI step — which PyPI forbids in uploaded metadata; now a
-    # published wheel, so it lives here like any other dev dep.
-    "agent-suite-conformance==1.0.0; python_version >= '3.12'",
+    "hypothesis>=6.168.4",
 ]
 
-sidecar = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "pydantic>=2.7",
-    "httpx>=0.27",
-]
-ed25519 = [
-    "PyNaCl>=1.5",
-]
-encryption = [
-    "cryptography>=42.0",
-]
-vendor-check = [
-    "rfc8785==0.1.4",
-]
-vault = [
-    "hvac>=2.0",
-]
-azure = [
-    "azure-identity>=1.16",
-    "azure-keyvault-secrets>=4.8",
-]
-windows = []
+[project.scripts]
+regista = "regista.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/regista"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"migrations" = "regista/migrations"
-
-[project.scripts]
-regista = "regista._cli:main"
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/regista", "/examples", "/tests", "/scripts", "/githooks",
+    "/publication.toml", "/pyproject.toml", "/README.md", "/LICENSE",
+    "/Makefile", "/docker-compose.test.yml", "/.github",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", ".", "tests"]
-addopts = "-m 'not slow' --strict-markers"
-markers = [
-    "slow: scale benchmarks, skipped by default",
-    "epoch_blocked: strict-xfail nodes blocked on the v6 ordinary-event writer (P1.7); applied from tests/epoch_blocked_manifest.json, never by hand",
-]
+# Both the pytest console script and python -m pytest must find repository helpers.
+pythonpath = [".", "src", "tests"]
+addopts = "--strict-markers"
 
 [tool.ruff]
-# D14 (Plan 032 open-decisions, adopted default 2026-09-17): prototypes/ is the
-# retained implementation (D1 = EXTRACT), not a throwaway — it gets the same
-# lint gate as src/ and tests/ now, not only after promotion. See
-# [tool.mypy] below and .github/workflows/ci.yml for the matching type-check
-# and PostgreSQL-backed test coverage.
 target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "RUF"]
 
-# ---------------------------------------------------------------------------
-# Static typing — strict, adopted as a ratchet (WI-005).
-#
-# `strict = true` is enforced on every module NOT in the burndown list below.
-# A cold strict run on this ~20k-LOC kernel surfaced ~1045 errors (mostly
-# annotation-completeness: missing generic params + unannotated defs), too many
-# to fix safely in one pass. So strict is on globally, full strict is enforced
-# on the already-clean modules and on every NEW module, and the currently-dirty
-# modules are quarantined with `ignore_errors` and burned down one PR at a time
-# — each PR deletes module(s) from the list below. assert_never is deliberately
-# NOT used here: regista's dispatch is data-driven (YAML workflows, DB
-# vocabulary), so it has no Python-enum match sites to make exhaustive.
-# ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
 strict = true
-# D14 (Plan 032 open-decisions, adopted default 2026-09-17): prototypes/ (the retained
-# kernel prototype, D1 = EXTRACT) is a first-class strict target now, not
-# only after promotion — "verified clean by hand" establishes neither
-# continued coverage nor that it stays clean. It has no burndown-list
-# quarantine: unlike src/regista's pre-existing debt, new modules here are
-# expected to be strict-clean from the start.
-files = ["src/regista", "prototypes"]
-
-# Untyped third-party libs (installed in CI via extras, but ship no stubs).
-[[tool.mypy.overrides]]
-module = ["nacl", "nacl.*", "rfc8785", "rfc8785.*", "hvac", "hvac.*", "azure.identity", "azure.identity.*", "azure.keyvault", "azure.keyvault.*", "azure.core", "azure.core.*"]
-ignore_missing_imports = true
-
-# --- WI-233 complete: all source modules are now mypy --strict clean.
-#     The kernel is fully strict. The `DictConn = psycopg.Connection[dict[str, Any]]`
-#     alias (in _connection.py, matching the row_factory=dict_row runtime)
-#     documents the dict-row contract and unlocks most modules. ---
+files = ["src/regista"]
