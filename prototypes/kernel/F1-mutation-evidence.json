@@ -8,14 +8,6 @@
     ]
   },
   {
-    "mutant": "search_path_injection",
-    "file": "kernel.py",
-    "selection": "test_supplied_schema_cannot_redirect",
-    "failed_nodes": [
-      "prototypes.kernel.tests.test_f1_namespace_workflows::test_supplied_schema_cannot_redirect"
-    ]
-  },
-  {
     "mutant": "history_before_ignored_a4",
     "file": "kernel.py",
     "selection": "test_history_windows_a4[before_suffix]",
@@ -396,6 +388,14 @@
     "failed_nodes": [
       "prototypes.kernel.tests.test_f1_core::test_event_projection_atomicity[create]",
       "prototypes.kernel.tests.test_f1_core::test_event_projection_atomicity[transition]"
+    ]
+  },
+  {
+    "mutant": "search_path_injection",
+    "file": "kernel.py",
+    "selection": "test_supplied_schema_cannot_redirect",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_namespace_workflows::test_supplied_schema_cannot_redirect"
     ]
   },
   {
@@ -1169,6 +1169,352 @@
       "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[expired]",
       "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[released]",
       "prototypes.kernel.tests.test_f1_core::test_fencing_precedes_sequence[takeover]"
+    ]
+  },
+  {
+    "mutant": "malformed_payload_reducer_unchecked_a5",
+    "file": "kernel.py",
+    "selection": "test_replay_malformed_a5 or test_cli_replay_malformed_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-fields_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-fields_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-fields_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_object]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_members]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-missing_fields]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-missing_state]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-state_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-object_missing]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_bool]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_number]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-deep]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-fields_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-fields_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-fields_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_object]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_members]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-missing_fields]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-missing_state]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-state_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-object_missing]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_bool]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_number]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-deep]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-payload0]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-None]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-payload2]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-payload3]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-payload0]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-None]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-payload2]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-payload3]"
+    ]
+  },
+  {
+    "mutant": "malformed_payload_report_hidden_a5",
+    "file": "kernel.py",
+    "selection": "test_replay_malformed_a5 or test_cli_replay_malformed_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-fields_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-fields_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-fields_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_object]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-unset_members]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-missing_fields]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-missing_state]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-state_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-object_missing]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_bool]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_number]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-payload_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[0-deep]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-fields_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-fields_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-fields_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_object]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-unset_members]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-missing_fields]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-missing_state]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-state_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-object_missing]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_list]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_null]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_bool]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_number]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-payload_string]",
+      "prototypes.kernel.tests.test_f1_a5::test_replay_malformed_a5[2-deep]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-payload0]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-None]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-payload2]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[False-payload3]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-payload0]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-None]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-payload2]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_replay_malformed_a5[True-payload3]"
+    ]
+  },
+  {
+    "mutant": "create_retry_lookup_removed_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_a5 or test_create_concurrent_a5 or test_cli_create_idempotency_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_a5",
+      "prototypes.kernel.tests.test_f1_a5::test_create_concurrent_a5",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_create_idempotency_a5"
+    ]
+  },
+  {
+    "mutant": "create_conflicting_retry_accepted_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5 or test_idempotency_shared_namespace_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[workflow]",
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[workflow_version]",
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[type]",
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[actor_id]",
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[actor_kind]",
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[fields]",
+      "prototypes.kernel.tests.test_f1_a5::test_idempotency_shared_namespace_a5[create]",
+      "prototypes.kernel.tests.test_f1_a5::test_idempotency_shared_namespace_a5[transition]"
+    ]
+  },
+  {
+    "mutant": "create_key_lock_removed_a5",
+    "file": "kernel.py",
+    "selection": "test_create_key_lock_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_key_lock_a5"
+    ]
+  },
+  {
+    "mutant": "cli_create_key_ignored_a5",
+    "file": "cli.py",
+    "selection": "test_cli_create_idempotency_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_cli_create_idempotency_a5"
+    ]
+  },
+  {
+    "mutant": "read_diagnostics_writable_gate_a5",
+    "file": "kernel.py",
+    "selection": "test_cli_unsupported_diagnostics_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[False-health]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[False-show]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[False-history]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[False-replay]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[True-health]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[True-show]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[True-history]",
+      "prototypes.kernel.tests.test_f1_a5::test_cli_unsupported_diagnostics_a5[True-replay]"
+    ]
+  },
+  {
+    "mutant": "read_transactions_writable_a5",
+    "file": "kernel.py",
+    "selection": "test_reads_enforced_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[False-direct]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[False-helper]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[False-cte]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[False-lowercase]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[True-direct]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[True-helper]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[True-cte]",
+      "prototypes.kernel.tests.test_f1_a5::test_reads_enforced_a5[True-lowercase]"
+    ]
+  },
+  {
+    "mutant": "raw_file_limit_after_parse_a5",
+    "file": "kernel.py",
+    "selection": "test_workflow_raw_limit_a5 and file",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_raw_limit_a5[file-yaml]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_raw_limit_a5[file-json]"
+    ]
+  },
+  {
+    "mutant": "raw_text_limit_removed_a5",
+    "file": "kernel.py",
+    "selection": "test_workflow_raw_limit_a5 and text",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_raw_limit_a5[text-yaml]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_raw_limit_a5[text-json]"
+    ]
+  },
+  {
+    "mutant": "yaml_alias_guard_removed_a5",
+    "file": "kernel.py",
+    "selection": "test_workflow_alias_bounded_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_alias_bounded_a5[bomb]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_alias_bounded_a5[anchor]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_alias_bounded_a5[alias]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_alias_bounded_a5[cycle]"
+    ]
+  },
+  {
+    "mutant": "workflow_refusal_type_leaks_a5",
+    "file": "kernel.py",
+    "selection": "test_workflow_error_type_a5 and not document",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_error_type_a5[validate-size]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_error_type_a5[validate-name]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_error_type_a5[validate-json]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_error_type_a5[register-size]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_error_type_a5[register-name]",
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_error_type_a5[register-json]"
+    ]
+  },
+  {
+    "mutant": "projection_summary_omitted_a5",
+    "file": "kernel.py",
+    "selection": "test_projection_summary_visible_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_projection_summary_visible_a5"
+    ]
+  },
+  {
+    "mutant": "history_newest_truthy_a5",
+    "file": "kernel.py",
+    "selection": "test_history_newest_type_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_history_newest_type_a5[yes]",
+      "prototypes.kernel.tests.test_f1_a5::test_history_newest_type_a5[1]",
+      "prototypes.kernel.tests.test_f1_a5::test_history_newest_type_a5[0]",
+      "prototypes.kernel.tests.test_f1_a5::test_history_newest_type_a5[None]",
+      "prototypes.kernel.tests.test_f1_a5::test_history_newest_type_a5[newest4]",
+      "prototypes.kernel.tests.test_f1_a5::test_history_newest_type_a5[newest5]"
+    ]
+  },
+  {
+    "mutant": "history_unknown_empty_a5",
+    "file": "kernel.py",
+    "selection": "test_history_unknown_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_history_unknown_a5"
+    ]
+  },
+  {
+    "mutant": "read_names_unbounded_a5",
+    "file": "kernel.py",
+    "selection": "test_read_input_limits_a5 and not (many or states_bytes)",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[owned]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[workflow]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[type]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[link]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[links_from]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[get_workflow]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[workflow_after]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[link_after]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[state]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[satisfied]"
+    ]
+  },
+  {
+    "mutant": "read_state_count_unbounded_a5",
+    "file": "kernel.py",
+    "selection": "test_read_input_limits_a5 and many",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[many_states]",
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[many_satisfied]"
+    ]
+  },
+  {
+    "mutant": "read_state_bytes_unbounded_a5",
+    "file": "kernel.py",
+    "selection": "test_read_input_limits_a5 and states_bytes",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_read_input_limits_a5[states_bytes]"
+    ]
+  },
+  {
+    "mutant": "release_docstring_lost_a5",
+    "file": "kernel.py",
+    "selection": "test_release_docstring_a5",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_release_docstring_a5"
+    ]
+  },
+  {
+    "mutant": "create_hash_omits_workflow_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5[workflow]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[workflow]"
+    ]
+  },
+  {
+    "mutant": "create_hash_omits_workflow_version_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5[workflow_version]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[workflow_version]"
+    ]
+  },
+  {
+    "mutant": "create_hash_omits_type_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5[type]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[type]"
+    ]
+  },
+  {
+    "mutant": "create_hash_omits_actor_id_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5[actor_id]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[actor_id]"
+    ]
+  },
+  {
+    "mutant": "create_hash_omits_actor_kind_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5[actor_kind]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[actor_kind]"
+    ]
+  },
+  {
+    "mutant": "create_hash_omits_fields_a5",
+    "file": "kernel.py",
+    "selection": "test_create_idempotency_conflict_a5[fields]",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_create_idempotency_conflict_a5[fields]"
+    ]
+  },
+  {
+    "mutant": "stored_json_decoder_exception_leaks_a5",
+    "file": "kernel.py",
+    "selection": "test_replay_decoder_damage_a5 and integer",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_replay_decoder_damage_a5[integer]"
+    ]
+  },
+  {
+    "mutant": "workflow_json_decoder_exception_leaks_a5",
+    "file": "kernel.py",
+    "selection": "test_workflow_decoder_error_type_a5 and integer",
+    "failed_nodes": [
+      "prototypes.kernel.tests.test_f1_a5::test_workflow_decoder_error_type_a5[integer]"
     ]
   }
 ]

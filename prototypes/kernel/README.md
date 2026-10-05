@@ -205,6 +205,14 @@ any different request raises `IdempotencyConflictError` with no partial effect.
 The key is global within the project schema, so the same guarantee applies when
 two callers race it against different work items.
 
+`create_work_item(..., idempotency_key="...")` also deduplicates concurrent
+retries, returning the original item and creation event without new effects.
+Create hashes the workflow name, requested version (including None for latest),
+type, actor ID/kind and fields. A retry with an unpinned version returns its
+original version even after registration advances. Create and transition share
+one project-schema key namespace; using either operation's key for the other
+refuses. CLI: `create ... --idempotency-key KEY`.
+
 Workflow registration and first-time schema initialization are likewise
 serialized by logical name. Concurrent identical workflow registration returns
 the existing version; concurrent distinct definitions receive consecutive
@@ -513,8 +521,9 @@ contract, not this implementation.
 
 
 Opening an existing project uses `Kernel.connect(dsn, schema="project",
-require_existing=True)`. Missing, empty and unsupported schemas raise
-`UnsupportedSchemaError` without writes. The default opens a pool for the
+require_existing=True)`. Missing or empty schemas raise
+`UnsupportedSchemaError` without writes. Unsupported version markers remain
+readable for health, inspection, history and replay; only writes refuse them. The default opens a pool for the
 explicit `initialize()` sequence; it creates no namespace or tables on its own.
 All database CLI commands except `init` use the existing-project path.
 
@@ -526,7 +535,8 @@ exclusive. The default selects the oldest matching prefix; `newest=True`
 selects the newest matching suffix. Resume forward with `after=page[-1].seq`,
 or backward with `before=page[0].seq`. Limits are 1–500. This extends the same
 keyset convention used by item queries and keeps suffix reads practical without
-loading earlier events. CLI: `history ID --before 30 --newest --limit 10`.
+loading earlier events. Unknown IDs raise `WorkItemNotFoundError`; `newest`
+must be a bool. CLI: `history ID --before 30 --newest --limit 10`.
 
 `replay(id)` checks stored transition names against the item's pinned workflow
 version. Unknown names are drift. An ID with no projection or events raises
@@ -538,7 +548,9 @@ not revalidate historical caller roles or prove arbitrary workflow semantics.
 `replay_all(*, batch_size=50)` yields `ReplayResult(work_item_id, state, fields,
 drift)` for every namespace item in UUID order, including projection-only and
 event-only IDs. Client memory holds one ID page and one item's reduction.
-Diagnostics retain at most 100 messages plus an omitted count. Each item has its
+Malformed payloads are per-item drift; the sweep continues to healthy items.
+Diagnostics retain at most 100 messages plus an omitted count, keeping
+projection/state/field/sequence mismatch summaries visible. Each item has its
 own repeatable-read snapshot; the namespace sweep is not an atomic snapshot.
 Run restore verification against a quiescent restored database. A concurrent
 insertion behind the UUID cursor appears on the next sweep. No connection is
@@ -553,14 +565,22 @@ Free-form fields, final merged fields, transition payloads, `unset_fields` and
 scalar query probes are each limited to **64 KiB (65536 bytes)**, measured as
 compact UTF-8 JSON with no ASCII escaping; nesting is limited to 32 levels.
 Workflow definitions are limited to **256 KiB (262144 bytes)** using the same
-JSON measurement. Workflow/state/transition/type/role/link/actor names and
+JSON measurement. Raw file/text input has the same limit before parsing; file
+reads stop at limit + 1 bytes. YAML anchors and aliases are refused before
+construction. All workflow-document refusals raise `InvalidWorkflowError`.
+Workflow/state/transition/type/role/link/actor names and
 idempotency keys are limited to **255 UTF-8 bytes**. Namespace/schema names
 are limited to **63 UTF-8 bytes** so PostgreSQL cannot silently truncate a
 long name and redirect the connection. Custom-field names share
 the field document's byte budget. Exact limits are accepted; larger values raise
-`InputTooLargeError` before persistent effects. Limit merged fields as well as
+`InputTooLargeError` before persistent effects (workflow refusals instead raise
+`InvalidWorkflowError`). Limit merged fields as well as
 individual updates so small writes cannot accumulate unbounded state. Store
-large documents elsewhere and keep references in fields.
+large documents elsewhere and keep references in fields. Read filters use the
+same name and JSON byte limits; state/satisfied-state lists accept at most
+500 names. Every read operation runs in PostgreSQL read-only transactions,
+including transactions restarted internally, so SQL in helpers and modifying
+CTEs cannot accidentally persist writes. This also applies on unsupported schemas.
 
 The kernel has no validator/callback registry or `actor_metadata` parameter.
 Callers validate before `transition`; built-in required-field, field-type and

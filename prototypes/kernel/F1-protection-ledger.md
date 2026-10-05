@@ -1,6 +1,9 @@
 # F1 Stage A — protection ledger
 
-Stage A4 closes all **212 remaining UNRESOLVED rows**. Stage B still requires
+Stage A4 closes all **212 remaining UNRESOLVED rows**. Stage A5 fixes the
+second cross-lineage review's two high, three medium and five low findings,
+adds 113 regression nodes, and corrects the create-deduplication disposition.
+Stage B still requires
 maintainer authorization and independent review; this ledger does not authorize
 deletion. No `src/regista/` or root `tests/` file was edited or deleted. The
 existing 69 standalone checks remain passing.
@@ -217,10 +220,10 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_contract.py::TestCheckIdempotency::test_matching_returns_existing` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_original_result` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
 | `tests/test_contract.py::TestCheckIdempotency::test_actor_mismatch_raises` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[actor]` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
 | `tests/test_contract.py::TestCheckIdempotency::test_transition_mismatch_raises` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[transition]` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
-| `tests/test_contract.py::TestCheckIdempotency::test_matching_with_none_transition_and_none_actor` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Retire private wildcard None lookup semantics; public retries require item, actor and transition. | Retirement reference |
+| `tests/test_contract.py::TestCheckIdempotency::test_matching_with_none_transition_and_none_actor` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Retire private wildcard None lookup semantics; public keys bind the complete create or transition request. | Retirement reference |
 | `tests/test_contract.py::TestCheckIdempotency::test_work_item_id_mismatch_raises` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_conflict[item]` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
 | `tests/test_contract.py::TestCheckIdempotency::test_work_item_id_match_passes` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_original_result` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
-| `tests/test_contract.py::TestCheckIdempotency::test_work_item_id_none_skips_check` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Retire private wildcard None lookup semantics; public retries require item, actor and transition. | Retirement reference |
+| `tests/test_contract.py::TestCheckIdempotency::test_work_item_id_none_skips_check` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Retire private wildcard None lookup semantics; public keys bind the complete create or transition request. | Retirement reference |
 | `tests/test_contract.py::TestCheckExpectedSeq::test_none_expected_passes` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_idempotency_original_result` | Both first transitions omit expected_seq (default None) and remain valid as the current sequence advances. | 1/1 nodes; recipes below |
 | `tests/test_contract.py::TestCheckExpectedSeq::test_matching_passes` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence[0]` | Behaviour tested through PostgreSQL/public operations, not private validation imports; None filters/old optional fields have no direct public equivalent. | 1/1 nodes; recipes below |
 | `tests/test_contract.py::TestCheckExpectedSeq::test_mismatching_raises` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_expected_sequence_stale_lower` | Current seq 5 with expected seq 3 is refused without effects, preserving the old stale-lower assertion. Higher expectations remain separately covered by test_expected_sequence[1] and [99]; the original mapping overstated the port. | 1/1 nodes; expected_sequence_gt killed |
@@ -292,7 +295,7 @@ Repeated source nodes in §B/§C are separate map obligations, counted as rows.
 | `tests/test_in_memory_conformance.py::TestConformanceTransition::test_custom_fields_update_on_transition` | PORTED | `prototypes/kernel/tests/test_f1_fields.py::test_shallow_merge_and_atomic_clear` | §B assertion adapted to kernel public results; real PostgreSQL only. The 32 unchanged-body claim is inaccurate. | 1/1 nodes; recipes below |
 | `tests/test_in_memory_conformance.py::TestConformanceEvents::test_read_events_by_work_item` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_create_and_get` | §B assertion adapted to kernel public results; real PostgreSQL only. The 32 unchanged-body claim is inaccurate. | 1/1 nodes; recipes below |
 | `tests/test_in_memory_conformance.py::TestConformanceEvents::test_read_events_by_actor` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Ordered per-item history retained; callers filter actors/transitions themselves. | Retirement reference |
-| `tests/test_in_memory_conformance.py::TestConformanceEvents::test_event_idempotency` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Retire caller-chosen creation event ID; transition idempotency keys protect safe retries. | Retirement reference |
+| `tests/test_in_memory_conformance.py::TestConformanceEvents::test_event_idempotency` | PORTED | `prototypes/kernel/tests/test_f1_a5.py::test_create_idempotency_a5`; `test_create_concurrent_a5`; `test_create_idempotency_conflict_a5` | Plan 032 §3 retains create deduplication; caller-chosen creation event ID retires, replaced by optional create idempotency keys in the shared create/transition namespace. The prior transition-only rationale was false. | Stage A5 scratch mutation proof |
 | `tests/test_in_memory_conformance.py::TestConformanceEvents::test_read_events_composite_work_item_and_transition` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Ordered per-item history retained; callers filter actors/transitions themselves. | Retirement reference |
 | `tests/test_in_memory_conformance.py::TestConformanceEvents::test_read_events_composite_actor_and_transition` | RETIRED-BY-DEFAULT | [F1 Stage A adopted defaults — 2026-10-05](../../plans/032-open-decisions.md#f1-stage-a-adopted-defaults--2026-10-05) | Ordered per-item history retained; callers filter actors/transitions themselves. | Retirement reference |
 | `tests/test_in_memory_conformance.py::TestConformanceClaims::test_acquire_and_release` | PORTED | `prototypes/kernel/tests/test_f1_core.py::test_claim_acquire_release` | §B assertion adapted to kernel public results; real PostgreSQL only. The 32 unchanged-body claim is inaccurate. | 1/1 nodes; recipes below |
@@ -1937,7 +1940,7 @@ nodes; the four DSN-mode subprocess cases, CI job pin, and positive retry-before
 fencing/sequence case added in A3. They all run under both interpreter gates.
 The CI and DSN-refusal cases additionally have tests-first evidence above.
 Stage A4 adds 56 nodes, of which 32 are directly mutation-proven; the other
-24 run under both interpreter gates. Overall 49/408 nodes are not claimed
+24 run under both interpreter gates. At A4, 49/408 nodes were not claimed
 mutation-proven; this is not an every-assertion coverage claim.
 
 ## Stage A4 — closure and protection evidence
@@ -2041,10 +2044,128 @@ selected node must fail in its test body; no skip or setup-error counts.
 | `prototypes/kernel/tests/test_f1_a4.py::test_unset_input_limit_a4` | `unset_unbounded_a4` |
 | `prototypes/kernel/tests/test_f1_a4.py::test_workflow_input_limit_a4` | `workflow_unbounded_a4` |
 
+## Stage A5 — second cross-lineage review
+
+Working set: prototypes/kernel/** and plans/032-open-decisions.md, in the same
+isolated feat/wi364-f1-protection worktree, under the user's WI-364 assignment.
+No live-estate updates, claims or acceptance transitions were made in A5.
+The supplied Claude Opus review accepted the nine A3 fixes and reviewed A4
+pagination, pinned replay, not-found, namespace, size-limit, ruling and retirement
+protections. This stage repairs its new findings; independent review of A5 is
+pending. Local gates and the scratch mutation artifact are the external evidence;
+no suite provenance or remote CI result is invented.
+
+**H1:** Stored payloads must be JSON objects with the required reducer keys and
+correct creation/transition field types. Wrong fields, missing keys, non-object
+payloads, non-list unsets and non-string unset members are per-item drift. The
+shape check runs even with a recomputed checksum. Python JSON decoding failures
+(oversized integer digits, and deep nesting on 3.11) are also item drift rather
+than escaping as ValueError/RecursionError. Reduction skips malformed events;
+chain checks continue where decoding succeeds. replay_all converts per-item
+KernelError refusals into reports and proceeds with the next ID. Tests put the
+damaged item first in UUID order and use batch_size=1 to prove traversal of the
+healthy items. Namespace and single-item CLI replay return 1 with diagnostics.
+
+**H2:** create_work_item accepts optional idempotency_key, serializes absent keys
+with the same schema-scoped advisory lock used by transition, and records the
+original creation event in the existing idempotency table, atomically with the
+item. The hash binds operation, workflow, requested workflow_version (including
+None), type, actor_id, actor_kind and fields. Create and transition deliberately
+share one namespace per project schema. A same-request retry returns the original
+creation result even after later edits or registration of a newer workflow;
+a different request or operation refuses before effects. Four simultaneous
+callers and twelve identical requests produce exactly one item/event; a held
+key-lock barrier makes removing create serialization deterministically fail.
+CLI create exposes --idempotency-key. The corrected adopted-default row retires
+only caller-chosen event IDs, preserving deduplication under Plan 032 §3's
+Idempotency keep-table row. The §B test_event_idempotency row is PORTED, and
+wildcard-lookup explanations now describe complete operation requests rather
+than incorrectly requiring item/transition on create.
+
+**M1/M2:** Existing-project admission checks initialization, allowing unsupported
+version markers for diagnostic reads; ordinary writes still share the version
+gate. Health/show/history/replay work on marker 999 in human and JSON modes.
+Read refusals describe initialization/read failure, never writability. Each
+pooled read sets psycopg's read_only transaction characteristic before beginning
+work, retaining READ ONLY across internal rollback/transaction restart. Return
+cleanup clears the characteristic before the next borrower. PostgreSQL enforces
+persistent-write refusal regardless of helper boundaries or SQL spelling;
+static SQL parsing remains supplementary. Direct SQL, a module helper, a
+modifying CTE and lowercase SQL each refuse with ReadOnlySqlTransaction, both
+before and after a transaction restart. Legitimate subsequent claims still work.
+
+**M3 and low findings:** File loading reads at most MAX_WORKFLOW_BYTES + 1 raw
+bytes, and parse_workflow_document checks raw string UTF-8 length before invoking
+a parser. YAML anchor/alias tokens refuse before object construction; the depth-8
+alias reproducer and cyclic/isolated anchor/alias cases return in under 0.5 seconds
+with a 0.7-second test alarm. Parsed documents are bounded before schema
+validation. Workflow size/name/JSON and parser refusals use InvalidWorkflowError.
+release's docstring is restored. Projection state/field/sequence summaries are
+kept visible within the 100-line drift budget plus omission count. history raises
+WorkItemNotFoundError when neither projection nor events exists and rejects all
+non-bool newest values. Read names/cursors use the 255-byte name limit; state and
+satisfied-state lists use both 500-name and 64-KiB JSON limits.
+
+The intermediate full run found three old expectations requiring the requested
+updates: workflow name refusals now use InvalidWorkflowError, and two unknown-item
+history cases now expect the typed refusal. Decoder edge tests pass on both
+interpreters. No pre-fix collection/setup failure is claimed as tests-first proof.
+A preliminary mutation run exposed overlapping state-count/byte limits; shorter
+names isolate the count guard. Two older recipes were adapted to the moved
+workflow error translation and the transition-specific idempotency recheck;
+the latter's unscoped anchor initially hit create instead. The final complete
+unmodified control and all 139 scratch recipes passed the proof standard:
+every selected node failed in its test body; no setup error, skip or survivor
+counts. The canonical F1-mutation-evidence.json stores every failed node.
+
+The first final-gate pass then exposed a race in the new key-lock barrier on
+3.14: pg_stat_activity cached its first observation in the transaction holding
+the lock. The barrier now joins pg_locks held/waiting entries for the exact same
+advisory lock, avoiding statistics snapshots and unrelated waiters. Its affected
+create_key_lock_removed_a5 recipe was killed again after a fresh unmodified
+control; production code and all other recipe/test bodies were unchanged.
+All required gates are rerun after this final test and ledger correction.
+
+A5 directly proves 108/113 new nodes. The three from-document workflow-error
+cases and the two decoder nesting cases are exercised by both interpreter gates,
+but are not claimed mutation-proven. Prior 359 directly proved nodes remain
+proved, for 467 total. A5 recipes and actual killed-node counts:
+
+| Recipe | Failed test nodes |
+| --- | ---: |
+| `malformed_payload_reducer_unchecked_a5` | 42 |
+| `malformed_payload_report_hidden_a5` | 42 |
+| `create_retry_lookup_removed_a5` | 3 |
+| `create_conflicting_retry_accepted_a5` | 8 |
+| `create_key_lock_removed_a5` | 1 |
+| `cli_create_key_ignored_a5` | 1 |
+| `read_diagnostics_writable_gate_a5` | 8 |
+| `read_transactions_writable_a5` | 8 |
+| `raw_file_limit_after_parse_a5` | 2 |
+| `raw_text_limit_removed_a5` | 2 |
+| `yaml_alias_guard_removed_a5` | 4 |
+| `workflow_refusal_type_leaks_a5` | 6 |
+| `projection_summary_omitted_a5` | 1 |
+| `history_newest_truthy_a5` | 6 |
+| `history_unknown_empty_a5` | 1 |
+| `read_names_unbounded_a5` | 10 |
+| `read_state_count_unbounded_a5` | 2 |
+| `read_state_bytes_unbounded_a5` | 1 |
+| `release_docstring_lost_a5` | 1 |
+| `create_hash_omits_workflow_a5` | 1 |
+| `create_hash_omits_workflow_version_a5` | 1 |
+| `create_hash_omits_type_a5` | 1 |
+| `create_hash_omits_actor_id_a5` | 1 |
+| `create_hash_omits_actor_kind_a5` | 1 |
+| `create_hash_omits_fields_a5` | 1 |
+| `stored_json_decoder_exception_leaks_a5` | 1 |
+| `workflow_json_decoder_exception_leaks_a5` | 1 |
+
 ## Outstanding obligations
 
-**UNRESOLVED: 0.** Independent cross-lineage review of A3/A4 and maintainer
-Stage B authorization remain outstanding. Draft PR #92 is the review vehicle;
+**UNRESOLVED: 0.** The user supplied a second independent Claude Opus review of
+626927e..8ff7fef: all nine A3 findings and the reviewed A4 protections passed.
+Independent review of A5 and maintainer Stage B authorization remain outstanding. Draft PR #92 is the review vehicle;
 pushing the authorized branch is not acceptance or deletion authorization.
 No Stage B deletion, tag, publish or yank was performed. No suite provenance
 reference or remote CI success is invented.
@@ -2058,8 +2179,8 @@ D12 yanking where possible is not a blocker for 0.8.0 and still needs separate
 action authorization. This protection stage does not claim those F4/F5 tasks
 completed.
 
-§B remains fully dispositioned, now **24 PORTED, 2 RETIRED-BY-DESIGN,
-8 RETIRED-BY-DEFAULT, 1 RETIRED-BY-RULING, 0 UNRESOLVED**, covering all
+§B remains fully dispositioned, now **25 PORTED, 2 RETIRED-BY-DESIGN,
+7 RETIRED-BY-DEFAULT, 1 RETIRED-BY-RULING, 0 UNRESOLVED**, covering all
 35 original functions. The immutable old source and assertion inventory remain
 available for independent review; this stage does not authorize deleting entire
 caller files merely because individual assertions have replacements.
@@ -2071,7 +2192,9 @@ Disposable PostgreSQL 15 in a new task-owned container, CPython 3.14.8 and
 a failure requires correction and a fresh complete gate pass. The final chat
 handoff reports exact output. These are local acceptance results, not remote
 GitHub CI results. No live coordination data or other repository is modified by these gates;
-the two orientation tracker writes are disclosed in Stewardship above.
+the two A4 orientation tracker writes are disclosed in Stewardship above.
+A5 made no live-estate writes; its task-owned container is regista-f1-a5-pg,
+bound to 127.0.0.1:55532.
 
 The isolated protection suites use REGISTA_TEST_DSN on this container. Each
 standalone mutation/example command and the scenario wrapper receives its own
@@ -2084,9 +2207,9 @@ ordinary disposable test credentials are used.
 | Command | Final acceptance result |
 | --- | --- |
 | `.venv/bin/ruff check src/ tests/ tools/ prototypes/` | All checks passed! |
-| `.venv/bin/mypy` | Success: no issues found in 129 source files |
-| `.venv/bin/python -m pytest prototypes/kernel/tests -q` | 408 passed on CPython 3.14.8 |
-| `/tmp/regista-f1-python311/bin/python -m pytest prototypes/kernel/tests -q` | 408 passed on CPython 3.11.15 |
+| `.venv/bin/mypy` | Success: no issues found in 130 source files |
+| `.venv/bin/python -m pytest prototypes/kernel/tests -q` | 521 passed on CPython 3.14.8 |
+| `/tmp/regista-f1-python311/bin/python -m pytest prototypes/kernel/tests -q` | 521 passed on CPython 3.11.15 |
 | `.venv/bin/python prototypes/kernel/test_mutations.py "$DSN"` | 69 passed, 0 failed |
 | `.venv/bin/python prototypes/kernel/example_handoff.py "$DSN"` | Scenario passed. |
 | `.venv/bin/python prototypes/kernel/example_documents.py "$DSN"` | Scenario passed |
@@ -2097,9 +2220,9 @@ ordinary disposable test credentials are used.
 
 | Scope | PORTED | RETIRED-BY-DESIGN | RETIRED-BY-DEFAULT | RETIRED-BY-RULING | NEWLY PROTECTED | UNRESOLVED | Total |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Original map, including separated SPLIT portions | 170 | 39 | 33 | 1 | 20 | 0 | 263 |
+| Original map, including separated SPLIT portions | 171 | 39 | 32 | 1 | 20 | 0 | 263 |
 | Remaining 25 §A files, including helper/fixture assertions and retired halves | 230 | 442 | 185 | 68 | 0 | 0 | 925 |
-| Combined | 400 | 481 | 218 | 69 | 20 | 0 | 1188 |
+| Combined | 401 | 481 | 217 | 69 | 20 | 0 | 1188 |
 
 §A inventory: **45 files**, with the formerly inventory-only **25** expanded.
 Every source `assert` in those 25 files is represented; successful calls and
@@ -2107,9 +2230,11 @@ Every source `assert` in those 25 files is represented; successful calls and
 pytest node resolves in the collected suite. A repeated source/assertion in the
 original map and §A expansion is two ledger obligations, not two new tests.
 
-Collected suite: **112 functions, 408 parametrized nodes** —
+Collected suite: **132 functions, 521 parametrized nodes** —
 15 functions / 42 nodes added in A2; 10 functions / 22 nodes in A3;
-**19 functions / 56 nodes in A4**. Mutation proof: **112 killed mutants,
-359 distinct nodes** (A4 adds 22 recipes and 32 directly proved nodes).
+**19 functions / 56 nodes in A4**; **20 functions / 113 nodes in A5**.
+Mutation proof: **139 killed mutants, 467 distinct nodes** (A5 adds 27 recipes
+and 108 directly proved nodes). The remaining **54/521** nodes run under both
+interpreter gates; they are not claimed mutation-proven.
 Counts close the assertion dispositions; they do not grant Stage B deletion
 authorization, independent-review acceptance, or publication permission.

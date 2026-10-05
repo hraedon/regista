@@ -272,10 +272,11 @@ MUTANTS: list[tuple[str, str, Callable[[str], str], str]] = [
     (
         "large_workflow_refusal_traceback_a4",
         "kernel.py",
-        replace_once(
+        lambda s: method_replace("validate_workflow_document",
             "except (InvalidWorkflowError, InvalidFieldError) as e:",
-            "except InvalidWorkflowError as e:",
-        ),
+            "except InvalidWorkflowError as e:")(
+                method_replace("validate", "except InvalidFieldError as exc:",
+                               "except ValueError as exc:")(s)),
         "test_large_workflow_document_refuses_cleanly_a4",
     ),
     (
@@ -884,7 +885,8 @@ MUTANTS.extend(
         (
             "inlock_retry_recheck_removed",
             "kernel.py",
-            replace_once(
+            method_replace(
+                "transition",
                 'self._transaction_lock(cur, "idempotency", idempotency_key)\n'
                 "                prior = self._idempotency_result("
                 "cur, idempotency_key, request_hash)",
@@ -943,6 +945,91 @@ MUTANTS.extend(
         ),
     ]
 )
+
+
+MUTANTS.extend([
+    ("malformed_payload_reducer_unchecked_a5", "kernel.py",
+     body("_validate_event_payload", "return"),
+     "test_replay_malformed_a5 or test_cli_replay_malformed_a5"),
+    ("malformed_payload_report_hidden_a5", "kernel.py",
+     replace_once('drift.append(f"event {seq}: malformed payload: {exc}")', "pass"),
+     "test_replay_malformed_a5 or test_cli_replay_malformed_a5"),
+    ("create_retry_lookup_removed_a5", "kernel.py",
+     method_replace("create_work_item",
+        "prior = self._idempotency_result(cur, idempotency_key, request_hash)", "prior = None"),
+     "test_create_idempotency_a5 or test_create_concurrent_a5 or test_cli_create_idempotency_a5"),
+    ("create_conflicting_retry_accepted_a5", "kernel.py",
+     replace_once('if bytes(prior["request_hash"]) != request_hash:', "if False:"),
+     "test_create_idempotency_conflict_a5 or test_idempotency_shared_namespace_a5"),
+    ("create_key_lock_removed_a5", "kernel.py",
+     method_replace("create_work_item",
+        'self._transaction_lock(cur, "idempotency", idempotency_key)', "pass"),
+     "test_create_key_lock_a5"),
+    ("cli_create_key_ignored_a5", "cli.py",
+     method_replace("cmd_create", "idempotency_key=args.idempotency_key", "idempotency_key=None"),
+     "test_cli_create_idempotency_a5"),
+    ("read_diagnostics_writable_gate_a5", "kernel.py",
+     body("_check_existing_schema", "self._require_writable_schema(self._conn)"),
+     "test_cli_unsupported_diagnostics_a5"),
+    ("read_transactions_writable_a5", "kernel.py",
+     replace_once('conn.read_only = access == "read"', "conn.read_only = False"),
+     "test_reads_enforced_a5"),
+    ("raw_file_limit_after_parse_a5", "kernel.py",
+     method_replace("load_workflow_document", "fh.read(MAX_WORKFLOW_BYTES + 1)", "fh.read()"),
+     "test_workflow_raw_limit_a5 and file"),
+    ("raw_text_limit_removed_a5", "kernel.py",
+     method_replace("parse_workflow_document",
+        'if len(text.encode("utf-8")) > MAX_WORKFLOW_BYTES:', "if False:"),
+     "test_workflow_raw_limit_a5 and text"),
+    ("yaml_alias_guard_removed_a5", "kernel.py",
+     method_replace("parse_workflow_document",
+        "if isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):", "if False:"),
+     "test_workflow_alias_bounded_a5"),
+    ("workflow_refusal_type_leaks_a5", "kernel.py",
+     method_replace("validate", "raise InvalidWorkflowError(str(exc)) from exc", "raise"),
+     "test_workflow_error_type_a5 and not document"),
+    ("projection_summary_omitted_a5", "kernel.py",
+     body("important", "self.append(message)"), "test_projection_summary_visible_a5"),
+    ("history_newest_truthy_a5", "kernel.py",
+     method_replace("history", "if type(newest) is not bool:", "if False:"),
+     "test_history_newest_type_a5"),
+    ("history_unknown_empty_a5", "kernel.py",
+     method_replace("history", 'raise WorkItemNotFoundError(f"no such work item: {work_item_id}")',
+                    "pass"), "test_history_unknown_a5"),
+    ("read_names_unbounded_a5", "kernel.py", body("_check_name", "return"),
+     "test_read_input_limits_a5 and not (many or states_bytes)"),
+    ("read_state_count_unbounded_a5", "kernel.py",
+     method_replace("_item_page", "if len(names) > MAX_QUERY_NAMES:", "if False:"),
+     "test_read_input_limits_a5 and many"),
+    ("read_state_bytes_unbounded_a5", "kernel.py",
+     method_replace("_item_page", '_check_size(list(names), label, MAX_JSON_BYTES)', "pass"),
+     "test_read_input_limits_a5 and states_bytes"),
+    ("release_docstring_lost_a5", "kernel.py",
+     method_replace("release", '        """Release a lease.',
+                    '        _check_name(actor_id, "actor_id")\n        """Release a lease.'),
+     "test_release_docstring_a5"),
+])
+for field_name in ("workflow", "workflow_version", "type", "actor_id", "actor_kind", "fields"):
+    # Hashing the supplied request is what distinguishes these six conflicting reuses.
+    constant = ("None" if field_name == "workflow_version"
+                else ("{}" if field_name == "fields" else '""'))
+    MUTANTS.append((
+        f"create_hash_omits_{field_name}_a5", "kernel.py",
+        method_replace("create_work_item", f'"{field_name}": {field_name}',
+                       f'"{field_name}": {constant}'),
+        f"test_create_idempotency_conflict_a5[{field_name}]",
+    ))
+
+
+MUTANTS.extend([
+    ("stored_json_decoder_exception_leaks_a5", "kernel.py",
+     method_replace("replay",
+        "TypeError, ValueError, OverflowError, RecursionError, KeyError, AttributeError,",
+        "ZeroDivisionError,"), "test_replay_decoder_damage_a5 and integer"),
+    ("workflow_json_decoder_exception_leaks_a5", "kernel.py",
+     method_replace("parse_workflow_document", "UnicodeError, ValueError, RecursionError",
+                    "UnicodeError"), "test_workflow_decoder_error_type_a5 and integer"),
+])
 
 
 def run(root: Path, selection: str, report: Path) -> tuple[int, list[str], list[str], str]:
