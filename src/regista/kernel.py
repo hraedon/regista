@@ -1373,25 +1373,34 @@ class Kernel:
         return handle
 
     @staticmethod
-    def _refuse_legacy_schema(conn: DictConn) -> None:
-        tables = {
-            row["table_name"] for row in conn.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema=current_schema()"
-            ).fetchall()
-        }
-        legacy = tables & {
+    def _refuse_legacy_schema(conn: DictConn, schema: str) -> set[str]:
+        # Catalogs describe namespace occupancy regardless of object privileges.
+        # information_schema hides inaccessible tables and excludes functions
+        # and sequences, all of which make a destination nonempty. Use the
+        # explicit namespace: current_schema() is NULL without USAGE privilege.
+        objects = conn.execute(
+            "SELECT c.relname AS object_name, c.relkind::text AS object_kind "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=%s "
+            "UNION ALL SELECT p.proname, 'function' FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=%s",
+            (schema, schema),
+        ).fetchall()
+        names = {row["object_name"] for row in objects}
+        tables = {row["object_name"] for row in objects if row["object_kind"] in ("r", "p")}
+        legacy = names & {
             "_regista_migrations", "_substrate_migrations", "project_identity", "principal_keys",
         }
-        if legacy or (tables and "kernel_meta" not in tables):
+        if legacy or (names and "kernel_meta" not in tables):
             raise UnsupportedSchemaError(
-                f"destination is an old or unknown schema (found {sorted(legacy or tables)}). "
+                f"destination is an old or unknown schema (found {sorted(legacy or names)}). "
                 "Nothing was changed. No in-place upgrade is supported; use a fresh schema."
             )
+        return tables
 
     @_pooled_operation(access="read")
     def _check_destination(self) -> None:
-        self._refuse_legacy_schema(self._conn)
+        self._refuse_legacy_schema(self._conn, self._schema)
         self._end_read()
 
     @_pooled_operation(access="read")
@@ -1462,14 +1471,30 @@ class Kernel:
         those remain possible. A caller omitting initialize() must never write
         through an unknown/empty schema-version marker.
         """
-        Kernel._refuse_legacy_schema(conn)
         try:
-            row = conn.execute("SELECT kernel_schema_version FROM kernel_meta").fetchone()
+            # Fold refusal into the version read the write already needs. Check
+            # on every write: another session can add an old marker after open.
+            row = conn.execute(
+                "SELECT kernel_schema_version, NOT EXISTS ("
+                "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE n.nspname=current_schema() AND c.relname IN "
+                "('_regista_migrations','_substrate_migrations',"
+                "'project_identity','principal_keys') "
+                "UNION ALL SELECT 1 FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname=current_schema() AND p.proname IN "
+                "('_regista_migrations','_substrate_migrations','project_identity','principal_keys')"
+                ") AS destination_supported FROM kernel_meta"
+            ).fetchone()
         except psycopg.errors.UndefinedTable as exc:
             raise UnsupportedSchemaError(
                 "kernel schema is not initialized; nothing was changed"
             ) from exc
         found = row["kernel_schema_version"] if row else None
+        if row and not row["destination_supported"]:
+            raise UnsupportedSchemaError(
+                "destination contains legacy objects; nothing was changed"
+            )
         if found != KERNEL_SCHEMA_VERSION:
             raise UnsupportedSchemaError(
                 f"kernel schema version {found} is not writable by this build "
@@ -1520,13 +1545,7 @@ class Kernel:
             # An empty schema has no row to lock. Serialize concurrent
             # initializers before either one performs the check-then-create.
             self._transaction_lock(cur, "initialize", self._schema)
-            cur.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
-                (self._schema,),
-            )
-            tables = {r["table_name"] for r in cur.fetchall()}
-
-            self._refuse_legacy_schema(self._conn)
+            tables = self._refuse_legacy_schema(self._conn, self._schema)
             if "kernel_meta" in tables:
                 cur.execute("SELECT kernel_schema_version FROM kernel_meta")
                 row = cur.fetchone()

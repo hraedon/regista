@@ -148,3 +148,67 @@ def test_minimal_public_example(dsn: str, schema: str) -> None:
         assert handle.replay(item.id)[2] == []
     finally:
         handle.close()
+
+
+@pytest.mark.parametrize('object_kind', ['sequence', 'function'])
+def test_non_table_schema_is_not_empty(dsn: str, schema: str, object_kind: str) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if object_kind == 'sequence':
+            conn.execute(SQL('CREATE SEQUENCE {}.only_object').format(Identifier(schema)))
+        else:
+            conn.execute(SQL('CREATE FUNCTION {}.only_object() RETURNS integer '
+                             'LANGUAGE sql AS $$ SELECT 1 $$').format(Identifier(schema)))
+    for existing in (False, True):
+        with pytest.raises(UnsupportedSchemaError):
+            Kernel.connect(dsn, schema=schema, require_existing=existing)
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute('SELECT count(*) FROM pg_class c JOIN pg_namespace n '
+                            'ON n.oid=c.relnamespace WHERE n.nspname=%s AND '
+                            "c.relname='kernel_meta'", (schema,)).fetchone() == (0,)
+
+
+@pytest.mark.parametrize('namespace_usage', [False, True])
+def test_legacy_schema_hidden_from_unprivileged_role(
+    dsn: str, schema: str, namespace_usage: bool,
+) -> None:
+    role = schema + '_reader'
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(SQL('CREATE ROLE {}').format(Identifier(role)))
+        try:
+            conn.execute(SQL('CREATE TABLE {}._regista_migrations (version integer)').format(
+                Identifier(schema)))
+            if namespace_usage:
+                conn.execute(SQL('GRANT USAGE ON SCHEMA {} TO {}').format(
+                    Identifier(schema), Identifier(role)))
+            conn.execute(SQL('SET ROLE {}').format(Identifier(role)))
+            assert conn.execute('SELECT table_name FROM information_schema.tables '
+                                'WHERE table_schema=%s', (schema,)).fetchall() == []
+            conn.execute('RESET ROLE')
+            restricted_dsn = psycopg.conninfo.make_conninfo(dsn, options=f'-c role={role}')
+            for existing in (False, True):
+                with pytest.raises(UnsupportedSchemaError):
+                    Kernel.connect(restricted_dsn, schema=schema, require_existing=existing)
+            assert conn.execute(SQL('SELECT * FROM {}._regista_migrations').format(
+                Identifier(schema))).fetchall() == []
+            conn.execute('RESET ROLE')
+        finally:
+            conn.execute('RESET ROLE')
+            conn.execute(SQL('DROP OWNED BY {}').format(Identifier(role)))
+            conn.execute(SQL('DROP ROLE {}').format(Identifier(role)))
+
+
+def test_legacy_objects_added_to_initialized_schema_refuse_before_write(
+    kernel: Kernel, dsn: str, schema: str, workflow: Workflow,
+) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(SQL('CREATE TABLE {}._regista_migrations (version integer)').format(
+            Identifier(schema)))
+        before = conn.execute(SQL('SELECT count(*) FROM {}.events').format(
+            Identifier(schema))).fetchone()
+    with pytest.raises(UnsupportedSchemaError):
+        kernel.register_workflow(workflow)
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(SQL('SELECT count(*) FROM {}.events').format(
+            Identifier(schema))).fetchone() == before
+        assert conn.execute(SQL('SELECT count(*) FROM {}.workflow_registry').format(
+            Identifier(schema))).fetchone() == (0,)
