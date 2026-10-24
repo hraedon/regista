@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import yaml
 from psycopg.sql import SQL, Identifier
 
 from regista import (
+    MAX_NAME_BYTES,
     InvalidWorkflowError,
     Kernel,
     UnsupportedSchemaError,
@@ -193,6 +195,118 @@ def test_document_semantic_refusals(kernel: Kernel, workflow: Workflow, case: st
     with pytest.raises(InvalidWorkflowError):
         kernel.register_workflow(Workflow.from_document(doc))
     assert kernel.list_workflows() == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty_workflow_name",
+        "empty_state_name",
+        "duplicate_state",
+        "empty_transition_name",
+        "duplicate_transition_source",
+        "empty_type_name",
+        "duplicate_terminal",
+        "empty_role_name",
+        "duplicate_transition_role",
+        "empty_required_field_name",
+        "duplicate_required_field",
+    ],
+)
+def test_python_workflow_refuses_document_invariant_mismatches(
+    workflow: Workflow, case: str,
+) -> None:
+    """The direct constructor and document front door describe one workflow language."""
+    candidate = workflow
+    if case == "empty_workflow_name":
+        candidate = replace(workflow, name="")
+    elif case == "empty_state_name":
+        transitions = {
+            name: (tuple("" if state == "new" else state for state in sources), target)
+            for name, (sources, target) in workflow.transitions.items()
+        }
+        candidate = replace(
+            workflow,
+            states=("", *workflow.states[1:]),
+            initial="",
+            transitions=transitions,
+        )
+    elif case == "duplicate_state":
+        candidate = replace(workflow, states=(*workflow.states, workflow.states[0]))
+    elif case == "empty_transition_name":
+        transitions = dict(workflow.transitions)
+        transitions[""] = transitions.pop("start")
+        candidate = replace(workflow, transitions=transitions)
+    elif case == "duplicate_transition_source":
+        transitions = dict(workflow.transitions)
+        transitions["start"] = (("new", "changes", "new"), "doing")
+        candidate = replace(workflow, transitions=transitions)
+    elif case == "empty_type_name":
+        candidate = replace(workflow, types=("", *workflow.types[1:]))
+    elif case == "duplicate_terminal":
+        candidate = replace(workflow, terminal=(*workflow.terminal, workflow.terminal[0]))
+    elif case == "empty_role_name":
+        candidate = replace(
+            workflow,
+            roles={"approve": ("",), "reject": ("",)},
+            role_names=("",),
+        )
+    elif case == "duplicate_transition_role":
+        candidate = replace(
+            workflow,
+            roles={**workflow.roles, "approve": ("reviewer", "reviewer")},
+        )
+    elif case == "empty_required_field_name":
+        candidate = replace(workflow, required_fields={"submit": ("",)})
+    else:
+        candidate = replace(workflow, required_fields={"submit": ("note", "note")})
+
+    document_errors = validate_workflow_document(candidate.as_document())
+    if not document_errors:
+        assert Workflow.from_document(candidate.as_document()) != replace(candidate, version=0)
+    with pytest.raises(InvalidWorkflowError):
+        candidate.validate()
+
+
+def test_python_workflow_validation_preserves_document_roundtrip(workflow: Workflow) -> None:
+    workflow.validate()
+    assert Workflow.from_document(workflow.as_document()) == replace(workflow, version=0)
+
+    # Required-field keys are custom-field keys, not one of the capped name
+    # vocabularies. The pinned document schema has no maxLength for them, and
+    # this maintenance fix must not narrow the previously accepted boundary.
+    long_field = "x" * (MAX_NAME_BYTES + 1)
+    long_required = replace(workflow, required_fields={"submit": (long_field,)})
+    long_required.validate()
+    assert Workflow.from_document(long_required.as_document()) == long_required
+
+
+def test_empty_python_state_refuses_before_persistence(
+    kernel: Kernel, workflow: Workflow,
+) -> None:
+    transitions = {
+        name: (tuple("" if state == "new" else state for state in sources), target)
+        for name, (sources, target) in workflow.transitions.items()
+    }
+    malformed = replace(
+        workflow,
+        states=("", *workflow.states[1:]),
+        initial="",
+        transitions=transitions,
+    )
+    before = kernel.health()
+    with pytest.raises(InvalidWorkflowError, match="state"):
+        kernel.register_workflow(malformed)
+    assert kernel.list_workflows() == []
+    assert kernel.list_items() == []
+    after = kernel.health()
+    assert (after["workflows"], after["work_items"], after["events"]) == (
+        before["workflows"], before["work_items"], before["events"],
+    )
+
+    assert kernel.register_workflow(workflow) == 1
+    valid = kernel.create_work_item(workflow=workflow.name, type="task", actor_id="control")
+    assert kernel.replay(valid.id) == (workflow.initial, {}, [])
 
 
 @pytest.mark.parametrize("format", ["yaml", "json"])

@@ -2341,6 +2341,42 @@ $proof$;
     check("a workflow survives as_document() -> from_document() unchanged",
           the_document_round_trips)
 
+    def direct_workflow_validation_matches_the_document_language() -> None:
+        malformed = Workflow(
+            name="direct-invalid",
+            states=("", "done"),
+            initial="",
+            transitions={"finish": (("",), "done")},
+            terminal=("done",),
+            types=("x",),
+        )
+        problems = validate_workflow_document(malformed.as_document())
+        assert problems and "non-empty" in problems[0], (
+            f"the document front door unexpectedly accepted the empty state: {problems}"
+        )
+        expect(InvalidWorkflowError, malformed.validate,
+               "an empty state in a direct Workflow definition")
+
+        k = fresh(dsn, "m46")
+        before = k.health()
+        expect(InvalidWorkflowError, lambda: k.register_workflow(malformed),
+               "registering the same invalid direct Workflow")
+        after = k.health()
+        assert (after["workflows"], after["work_items"], after["events"]) == (
+            before["workflows"], before["work_items"], before["events"]), (
+            "an invalid direct Workflow left a partial registry, item or event write"
+        )
+
+        valid = replace(WF, name="direct-valid")
+        valid.validate()
+        assert Workflow.from_document(valid.as_document()) == valid
+        assert k.register_workflow(valid) == 1
+        item = k.create_work_item(workflow=valid.name, type="x", actor_id="control")
+        assert k.replay(item.id) == (valid.initial, {}, [])
+        k.close()
+    check("direct Workflow validation matches the document language and round-trips",
+          direct_workflow_validation_matches_the_document_language)
+
     def removed_keys_are_refused_by_name() -> None:
         explained = "is not part of the 0.8 workflow document"
         base = load_workflow(os.path.join(HERE, "remediation.workflow.yaml")).as_document()
