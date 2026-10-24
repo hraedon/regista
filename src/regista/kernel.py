@@ -819,16 +819,47 @@ class Workflow:
             ):
                 for name in names:
                     _check_name(name, label)
+            for transition, (froms, _) in self.transitions.items():
+                for source in froms:
+                    _check_name(source, f"transition {transition!r} source state")
+            for transition, roles in self.roles.items():
+                for role in roles:
+                    _check_name(role, f"transition {transition!r} role")
         except InvalidFieldError as exc:
             raise InvalidWorkflowError(str(exc)) from exc
+
+        def duplicates(names: tuple[str, ...]) -> list[str]:
+            seen: set[str] = set()
+            repeated: set[str] = set()
+            for name in names:
+                if name in seen:
+                    repeated.add(name)
+                else:
+                    seen.add(name)
+            return sorted(repeated)
+
         if self.version < 0:
             raise InvalidWorkflowError(
                 f"version {self.version} is negative. Leave version at 0 when defining a "
                 "workflow -- the registry assigns it -- or set it to the version you "
                 "expect this definition to already hold."
             )
+        # Direct Python definitions and workflow documents are two front doors
+        # to one language. Keep the document schema's nonempty/unique vocabulary
+        # here too: as_document()/from_document() promises a round trip, and a
+        # creation event with an empty workflow/type/state cannot pass replay's
+        # stored-event validation.
+        if not self.name:
+            raise InvalidWorkflowError("workflow name must be nonempty")
         if not self.states:
             raise InvalidWorkflowError("a workflow needs at least one state")
+        if any(not state for state in self.states):
+            raise InvalidWorkflowError("state names must be nonempty")
+        duplicate_states = duplicates(self.states)
+        if duplicate_states:
+            raise InvalidWorkflowError(
+                f"state name(s) declared more than once: {duplicate_states}"
+            )
         if not self.types:
             raise InvalidWorkflowError(
                 "a workflow needs at least one work-item type: types=('finding',). "
@@ -836,23 +867,63 @@ class Workflow:
                 "unchecked type string is how two spellings of one type become two "
                 "populations that no query reunites."
             )
-        if len(set(self.types)) != len(self.types):
-            dupes = sorted({t for t in self.types if self.types.count(t) > 1})
-            raise InvalidWorkflowError(f"work-item type(s) declared more than once: {dupes}")
+        if any(not item_type for item_type in self.types):
+            raise InvalidWorkflowError("work-item type names must be nonempty")
+        duplicate_types = duplicates(self.types)
+        if duplicate_types:
+            raise InvalidWorkflowError(
+                f"work-item type(s) declared more than once: {duplicate_types}"
+            )
+        if any(not transition for transition in self.transitions):
+            raise InvalidWorkflowError("transition names must be nonempty")
         if self.initial not in self.states:
             raise InvalidWorkflowError(f"initial state {self.initial!r} is not in states")
         for t, (froms, to) in self.transitions.items():
+            duplicate_sources = duplicates(froms)
+            if duplicate_sources:
+                raise InvalidWorkflowError(
+                    f"transition {t!r} names source state(s) more than once: "
+                    f"{duplicate_sources}"
+                )
             for f in froms:
                 if f not in self.states:
                     raise InvalidWorkflowError(f"transition {t!r} leaves unknown state {f!r}")
             if to not in self.states:
                 raise InvalidWorkflowError(f"transition {t!r} enters unknown state {to!r}")
+        duplicate_terminal = duplicates(self.terminal)
+        if duplicate_terminal:
+            raise InvalidWorkflowError(
+                f"terminal state(s) declared more than once: {duplicate_terminal}"
+            )
         for s in self.terminal:
             if s not in self.states:
                 raise InvalidWorkflowError(f"terminal state {s!r} is not in states")
         for t in list(self.roles) + list(self.required_fields):
             if t not in self.transitions:
                 raise InvalidWorkflowError(f"policy names unknown transition {t!r}")
+        for transition, roles in self.roles.items():
+            if any(not role for role in roles):
+                raise InvalidWorkflowError(
+                    f"role names for transition {transition!r} must be nonempty"
+                )
+            duplicate_roles = duplicates(roles)
+            if duplicate_roles:
+                raise InvalidWorkflowError(
+                    f"transition {transition!r} names role(s) more than once: "
+                    f"{duplicate_roles}"
+                )
+        for transition, required in self.required_fields.items():
+            if any(not isinstance(name, str) or not name for name in required):
+                raise InvalidWorkflowError(
+                    f"required-field names for transition {transition!r} must be "
+                    "nonempty strings"
+                )
+            duplicate_required = duplicates(required)
+            if duplicate_required:
+                raise InvalidWorkflowError(
+                    f"transition {transition!r} requires field(s) more than once: "
+                    f"{duplicate_required}"
+                )
 
         # Role catalogue, cross-checked BOTH ways. One direction alone catches
         # nothing useful: a role misspelled on a transition is only visible
@@ -867,8 +938,11 @@ class Workflow:
                 "nothing says so until someone tries it."
             )
         if len(set(self.role_names)) != len(self.role_names):
-            dupes = sorted({r for r in self.role_names if self.role_names.count(r) > 1})
-            raise InvalidWorkflowError(f"role(s) declared more than once: {dupes}")
+            raise InvalidWorkflowError(
+                f"role(s) declared more than once: {duplicates(self.role_names)}"
+            )
+        if any(not role for role in self.role_names):
+            raise InvalidWorkflowError("role names must be nonempty")
         undeclared = sorted(restricted - set(self.role_names))
         if undeclared:
             raise InvalidWorkflowError(
